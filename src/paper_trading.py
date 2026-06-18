@@ -86,7 +86,7 @@ def init_account(account_value: float, mode: str = "paper",
 def open_position(ticker: str, shares: int, entry_price: float,
                    stop_loss: float, target: float,
                    strategy: str = "", mode: str = "paper",
-                   slippage_pct: float = 0.05) -> dict:
+                   slippage_pct: float = 0.05, **kwargs) -> dict:
     """
     开仓记录。
 
@@ -112,6 +112,16 @@ def open_position(ticker: str, shares: int, entry_price: float,
 
     trade_id = str(uuid.uuid4())[:8]
     now      = str(datetime.now(ET))
+
+    # 记录入场信号快照（供反馈学习使用）
+    cold_result  = kwargs.get("cold_result")
+    debate_result= kwargs.get("debate_result")
+    if cold_result:
+        try:
+            from .feedback import record_entry_signals
+            record_entry_signals(trade_id, ticker, cold_result, debate_result)
+        except Exception:
+            pass
 
     position = {
         "id":           trade_id,
@@ -227,6 +237,19 @@ def close_position(trade_id: str, exit_price: float,
         "at": str(datetime.now(ET)),
     })
     _save(data, path)
+
+    # 反馈学习：记录平仓结果
+    try:
+        from .feedback import record_exit_result
+        opened_at = pos.get("opened_at", "")
+        hold_days = 0
+        if opened_at:
+            from datetime import timezone
+            open_dt  = datetime.fromisoformat(str(opened_at)[:19])
+            hold_days= max(0, (datetime.now() - open_dt).days)
+        record_exit_result(trade_id, pnl_pct, hold_days, exit_reason)
+    except Exception:
+        pass
 
     return {
         "ok":           True,
