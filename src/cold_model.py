@@ -382,6 +382,37 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             bonus += 8
             bonus_notes.append(f"营收加速 {float(rev_growth)*100:.0f}%（+8分）")
 
+    # ── 机构追踪加分（智能资金共振）────────────────────────
+    # 无论标准/激进，有机构信号都加分（上限+20，不影响一票否决逻辑）
+    try:
+        from .smart_money import detect_unusual_options, smart_money_flow, detect_short_squeeze
+        # 期权异常：看涨大单押注 +10
+        uoa = detect_unusual_options(ticker)
+        if uoa.get("ok") and uoa.get("bias") == "bullish":
+            bonus += 10
+            bonus_notes.append(f"机构期权看涨押注（+10）")
+        elif uoa.get("ok") and uoa.get("bias") == "bearish" and direction == "LONG":
+            bonus -= 8
+            bonus_notes.append(f"期权看跌异常，谨慎做多（-8）")
+
+        # 智能资金流向：收盘段净流入 +10
+        smf = smart_money_flow(ticker)
+        if smf.get("ok") and smf.get("smf_bias") == "bullish":
+            bonus += 10
+            bonus_notes.append(f"智能资金收盘净流入（+10）")
+        elif smf.get("ok") and smf.get("smf_bias") == "bearish" and direction == "LONG":
+            bonus -= 8
+            bonus_notes.append(f"机构尾盘出货警告（-8）")
+
+        # 空头挤压：高挤压潜力做多 +5
+        if direction == "LONG":
+            sqz = detect_short_squeeze(ticker)
+            if sqz.get("ok") and sqz.get("squeeze_score", 0) >= 60:
+                bonus += 5
+                bonus_notes.append(f"逼空潜力高（空仓{sqz['short_float_pct']}%，+5）")
+    except Exception:
+        pass  # 智能资金模块失败不影响主流程
+
     go_threshold   = 65 if aggressive_mode else 75
     wait_threshold = 45 if aggressive_mode else 55
 

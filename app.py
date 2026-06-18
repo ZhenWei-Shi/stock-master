@@ -46,6 +46,9 @@ from src.paper_trading import (init_account, open_position, close_position,
 from src.trading_agent import run_scan, run_monitor, daily_report
 from src.market import detect_follow_through_day
 from src.backtest import run_backtest as run_historical_backtest, print_report as bt_print_report
+from src.smart_money import (full_smart_money_scan, detect_unusual_options,
+                              calculate_gex, detect_short_squeeze,
+                              smart_money_flow, institutional_momentum)
 
 app = Flask(__name__)
 app.json_encoder = _NpEncoder
@@ -1257,6 +1260,71 @@ def api_agent_report():
     try:
         result = daily_report(mode)
         return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/smart-money/<ticker>")
+def api_smart_money(ticker):
+    """机构资金完整追踪报告（UOA + GEX + 空头挤压 + 智能资金流 + 13F）"""
+    try:
+        result = full_smart_money_scan(ticker.upper())
+        return app.response_class(
+            response=json.dumps(result, ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/smart-money/<ticker>/uoa")
+def api_uoa(ticker):
+    """异常期权活动（Unusual Options Activity）"""
+    try:
+        return app.response_class(
+            response=json.dumps(detect_unusual_options(ticker.upper()),
+                                ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/smart-money/<ticker>/gex")
+def api_gex(ticker):
+    """做市商 Gamma 敞口（Gamma Exposure）"""
+    try:
+        return app.response_class(
+            response=json.dumps(calculate_gex(ticker.upper()),
+                                ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/smart-money/<ticker>/squeeze")
+def api_squeeze(ticker):
+    """空头挤压探测器"""
+    try:
+        return app.response_class(
+            response=json.dumps(detect_short_squeeze(ticker.upper()),
+                                ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/smart-money/<ticker>/flow")
+def api_smf(ticker):
+    """智能资金流向（盘中机构 vs 散户）"""
+    try:
+        return app.response_class(
+            response=json.dumps(smart_money_flow(ticker.upper()),
+                                ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
