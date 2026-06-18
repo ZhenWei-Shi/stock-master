@@ -15,9 +15,11 @@
   每 4 小时刷新一次（盘中行情变化，但板块轮动不是分钟级信号）
   强制刷新：force=True
 """
+from __future__ import annotations
 
 import os
 import json
+import functools
 import yfinance as yf
 import numpy as np
 from datetime import datetime, timedelta
@@ -107,6 +109,8 @@ _INDUSTRY_MAP = {
     "Health Information Services":     "XLV",
     "Waste Management":                "XLI",
     "Scientific & Technical Instruments": "XLK",
+    # CCJ/UEC 等铀矿公司行业标签为 Uranium，随核电板块涨跌，映射至 XLU
+    "Uranium":                         "XLU",
 }
 
 _SECTOR_MAP = {
@@ -151,8 +155,10 @@ def _cache_stale(cache: dict) -> bool:
     if not ts:
         return True
     try:
-        updated = datetime.fromisoformat(str(ts)[:19])
-        return (datetime.now() - updated).total_seconds() > CACHE_TTL_HOURS * 3600
+        # 保留时区信息做 aware-to-aware 比较，避免 UTC 服务器与 ET 缓存时间错位
+        updated = datetime.fromisoformat(str(ts))
+        now_et  = datetime.now(ET)
+        return (now_et - updated).total_seconds() > CACHE_TTL_HOURS * 3600
     except Exception:
         return True
 
@@ -188,13 +194,18 @@ def fetch_sector_rankings(force: bool = False) -> dict:
     except Exception as e:
         return {"error": f"板块数据获取失败：{e}", "rankings": [], "top3": [], "bottom3": []}
 
+    import pandas as _pd
+
     def get_close(tk: str):
         try:
-            if isinstance(raw.columns, __import__("pandas").MultiIndex):
-                col = raw[tk]["Close"].dropna() if tk in raw.columns.get_level_values(0) else None
+            if isinstance(raw.columns, _pd.MultiIndex):
+                if tk not in raw.columns.get_level_values(0):
+                    return None
+                col = raw[tk]["Close"].dropna()
             else:
-                col = raw["Close"].dropna()
-            return col if col is not None and len(col) >= 10 else None
+                # 多 ticker 下载却返回扁平结构 = 数据异常，拒绝使用以免混淆
+                return None
+            return col if len(col) >= 10 else None
         except Exception:
             return None
 
@@ -202,19 +213,39 @@ def fetch_sector_rankings(force: bool = False) -> dict:
     if spy is None or len(spy) < 21:
         return {"error": "SPY 数据不足", "rankings": [], "top3": [], "bottom3": []}
 
-    def excess_ret(etf_close, days: int) -> float:
-        if etf_close is None or len(etf_close) < days or len(spy) < days:
-            return 0.0
-        etf_r = float((etf_close.iloc[-1] - etf_close.iloc[-days]) / max(etf_close.iloc[-days], 0.01))
-        spy_r = float((spy.iloc[-1]       - spy.iloc[-days])       / max(spy.iloc[-days],       0.01))
+    def excess_ret(etf_close, days: int) -> float | None:
+        """
+        计算 ETF 对 SPY 的超额收益（%）。
+        使用日期对齐（index.intersection）避免停牌/节假日导致的数据错位。
+        返回 None 表示数据不足，与真实超额为 0 的情况区分。
+        """
+        if etf_close is None:
+            return None
+        common_idx = etf_close.index.intersection(spy.index)
+        if len(common_idx) < days:
+            return None
+        etf_a = etf_close.reindex(common_idx)
+        spy_a = spy.reindex(common_idx)
+        base_e = float(etf_a.iloc[-days])
+        base_s = float(spy_a.iloc[-days])
+        etf_r  = (float(etf_a.iloc[-1]) - base_e) / max(base_e, 0.01)
+        spy_r  = (float(spy_a.iloc[-1]) - base_s) / max(base_s, 0.01)
         return round((etf_r - spy_r) * 100, 2)
 
     scores = []
     for etf, meta in SECTOR_ETFS.items():
-        cl = get_close(etf)
+        cl    = get_close(etf)
         rs_1m = excess_ret(cl, 21)
         rs_3m = excess_ret(cl, 63)
-        heat  = RS_1M_WEIGHT * rs_1m + RS_3M_WEIGHT * rs_3m
+        # 只用有效数据计算热度，避免 0.0 fallback 污染排名
+        if rs_1m is not None and rs_3m is not None:
+            heat = RS_1M_WEIGHT * rs_1m + RS_3M_WEIGHT * rs_3m
+        elif rs_1m is not None:
+            heat = rs_1m   # 仅 1M 有数据
+        else:
+            heat = 0.0     # 完全无数据，排末尾
+        rs_1m = rs_1m or 0.0
+        rs_3m = rs_3m or 0.0
         accel = rs_1m > rs_3m  # 资金加速流入
         scores.append({
             "etf":   etf,
@@ -248,10 +279,12 @@ def fetch_sector_rankings(force: bool = False) -> dict:
 # Ticker → 所属板块 ETF
 # ─────────────────────────────────────────────────────────────
 
+@functools.lru_cache(maxsize=256)
 def get_sector_for_ticker(ticker: str) -> str | None:
     """
     通过 yfinance info 获取 ticker 所属板块 ETF。
     先尝试 industry（精细），再用 sector（粗粒度）。
+    结果在进程生命周期内缓存，避免批量扫描时重复 HTTP 请求。
     """
     try:
         info     = yf.Ticker(ticker).info
@@ -364,6 +397,12 @@ def _interpret_rotation(rankings: list) -> str:
     hot_name   = rankings[0]["name"]
     hot_heat   = rankings[0]["heat"]
 
+    # 全面熊市：最强板块超额收益也为负，禁止误判为"资金均匀"
+    if all(r["heat"] < 0 for r in rankings):
+        return (f"全部板块超额收益均为负值，市场处于全面承压状态。"
+                f"最强板块【{hot_name}】超额{hot_heat:+.1f}%，仍跑输 SPY。"
+                f"建议大幅减仓或空仓观望，等待至少一个板块转正后再介入。")
+
     # 判断是否有强主线
     if hot_heat > 5:
         if accel_top:
@@ -396,9 +435,9 @@ SECTOR_TICKERS = {
     "XLP":  ["COST", "WMT", "PG",    "KO",   "PEP",  "MDLZ"],  # 防御，热时才看
     "XLB":  ["FCX",  "NEM", "CF",    "MP",   "ALB",  "LIN"],
     "XLRE": ["AMT",  "EQIX","PLD",   "WELL", "DLR",  "O"],    # 防御
-    "XLU":  ["CEG",  "NEE", "VST",   "NNE",  "CCJ",  "DUK"],  # 核电驱动时看
+    "XLU":  ["CEG",  "NEE", "VST",   "EXC",  "CCJ",  "DUK"],  # 核电/公用事业（NNE流动性不足，换 EXC）
     # 子行业 ETF
-    "SMH":  ["NVDA", "AMD", "AVGO",  "AMAT", "AAOI", "AXTI"],
+    "SMH":  ["NVDA", "AMD", "AVGO",  "AMAT", "LRCX", "KLAC"],  # AAOI/AXTI 流动性太低，换高流动性设备股
     "XBI":  ["MRNA", "REGN","BIIB",  "BMRN", "NTLA", "CRSP"],
     "ITA":  ["LMT",  "RTX", "NOC",   "RKLB", "KTOS", "BWXT"],
 }
@@ -409,7 +448,7 @@ _DEFENSIVE_ETFS = {"XLP", "XLRE"}
 
 def get_hot_tickers(top_n_sectors: int = 3,
                     per_sector: int = 5,
-                    skip_defensive: bool = True) -> list[str]:
+                    skip_defensive: bool = True) -> list[dict]:
     """
     返回当前最热板块的代表性个股列表（用于动态 watchlist）。
 

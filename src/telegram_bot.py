@@ -298,14 +298,14 @@ def handle_command(text: str):
             send(f"未找到：{', '.join(del_tickers)}")
 
     elif cmd == "/scan":
-        send("⏳ 开始扫描，请稍候（约1-3分钟）...")
         try:
             from src.scheduler import full_scan_cycle
             wl = read_watchlist()
-            if not wl:
-                send("自选股列表为空，请先 /add 股票")
-                return
             account = float(os.getenv("AGENT_ACCOUNT", "2000"))
+            if not wl:
+                send("⚠️ 自选股为空，将使用板块轮动热股扫描（约2-3分钟）...")
+            else:
+                send(f"⏳ 开始扫描 {len(wl)} 只自选股 + 板块热股，请稍候（约1-3分钟）...")
             threading.Thread(
                 target=full_scan_cycle,
                 args=(wl, account, "paper", True),
@@ -326,6 +326,7 @@ def handle_command(text: str):
         threading.Thread(target=_do_sector, daemon=True).start()
 
     elif cmd == "/hotlist":
+        send("⏳ 正在构建动态扫描列表（如缓存过期需约30秒）...")
         def _do_hotlist():
             try:
                 from src.trading_agent import build_dynamic_watchlist

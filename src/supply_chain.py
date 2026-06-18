@@ -26,19 +26,19 @@ CHAINS = {
                 "layer": 6,
                 "name": "数据中心基建",
                 "desc": "机房、电力、散热基础设施",
-                "tickers": ["VRT", "EQIX", "DLR", "NXT"],
+                "tickers": ["VRT", "EQIX", "DLR", "SMCI"],  # NXT=Nextracker太阳能追踪器与数据中心无关，换SMCI
             },
             {
                 "layer": 5,
                 "name": "光学收发器模组",
                 "desc": "800G/1.6T光收发器，当前机构资金主战场",
-                "tickers": ["AAOI", "COHR", "LITE", "VIAV", "FNSR"],
+                "tickers": ["AAOI", "COHR", "LITE", "VIAV"],  # FNSR 2019年被COHR收购已退市
             },
             {
                 "layer": 4,
                 "name": "连续波激光源",
                 "desc": "硅光子片内激光源，下一个卡脖子",
-                "tickers": ["SIVE", "POET"],
+                "tickers": ["IPGP", "LASR"],  # SIVE无效代码/POET是OTC，换IPGP(IPG光子)和LASR(nLIGHT)
             },
             {
                 "layer": 3,
@@ -122,7 +122,7 @@ CHAINS = {
                 "layer": 6,
                 "name": "数据中心运营商",
                 "desc": "托管数据中心，转售电力和冷却",
-                "tickers": ["EQIX", "DLR", "CONE"],
+                "tickers": ["EQIX", "DLR", "IRM"],  # CONE 2021年被KKR私有化已退市，换IRM
             },
             {
                 "layer": 5,
@@ -134,7 +134,7 @@ CHAINS = {
                 "layer": 4,
                 "name": "冷却/散热系统",
                 "desc": "液冷、浸没式冷却解决方案",
-                "tickers": ["GTLS", "IIVI", "LIQT"],
+                "tickers": ["GTLS", "COHR", "ALAB"],  # IIVI已改名COHR；LIQT市值~1000万OTC级别，换ALAB
             },
             {
                 "layer": 3,
@@ -190,7 +190,7 @@ CHAINS = {
                 "layer": 3,
                 "name": "合同研究/CDMO生产",
                 "desc": "委托生产GLP-1多肽活性成分（产能严重不足）",
-                "tickers": ["CTLT", "MEDP", "WCG"],
+                "tickers": ["IQV", "MEDP", "CRL"],  # CTLT 2024年12月Novo私有化已退市；WCG未上市，换IQV+CRL
             },
             {
                 "layer": 2,
@@ -215,8 +215,8 @@ CHAINS = {
             {
                 "layer": 7,
                 "name": "政府/北约盟国（终端买家）",
-                "desc": "国防预算无弹性需求，地缘风险升温时无上限",
-                "tickers": ["LMT", "RTX", "NOC"],
+                "desc": "国防预算无弹性需求，地缘风险升温时无上限（政府不可交易，此层仅作参考）",
+                "tickers": [],  # 政府买家不是上市公司，清空避免重复计算热度
             },
             {
                 "layer": 6,
@@ -228,7 +228,7 @@ CHAINS = {
                 "layer": 5,
                 "name": "太空/无人机/新域作战",
                 "desc": "商业航天、无人作战、超音速——国防新前沿",
-                "tickers": ["RKLB", "KTOS", "JOBY", "ACHR"],
+                "tickers": ["RKLB", "KTOS", "AVAV", "PLTR"],  # JOBY/ACHR是民用eVTOL非国防，换AVAV无人机+PLTR国防AI
             },
             {
                 "layer": 4,
@@ -240,13 +240,13 @@ CHAINS = {
                 "layer": 3,
                 "name": "推进系统/精密结构",
                 "desc": "火箭发动机、反应堆推进（潜艇）、精密机加工",
-                "tickers": ["BWXT", "HII", "TDY", "AXON"],
+                "tickers": ["BWXT", "HII", "TDY", "LHX"],  # AXON是泰瑟枪/执法科技非推进系统，换LHX(L3Harris含火箭推进)
             },
             {
                 "layer": 2,
                 "name": "先进材料/复合材料",
                 "desc": "碳纤维复合材料、钛合金结构件",
-                "tickers": ["HXL", "CRS", "TXT"],
+                "tickers": ["HXL", "CRS", "TDG"],  # TXT是系统集成商非复合材料，换TDG(TransDigm精密机加工)
             },
             {
                 "layer": 1,
@@ -278,7 +278,7 @@ CHAINS = {
                 "layer": 5,
                 "name": "机器人本体/末端执行",
                 "desc": "手术机器人、协作机器人、测试设备",
-                "tickers": ["ISRG", "TER", "BRKS", "MBOT"],
+                "tickers": ["ISRG", "TER", "BRKS", "PRCT"],  # MBOT市值~5000万流动性极差，换PRCT(Procept Bio~$2B)
             },
             {
                 "layer": 4,
@@ -290,13 +290,13 @@ CHAINS = {
                 "layer": 3,
                 "name": "运动控制/伺服驱动",
                 "desc": "精密伺服电机、编码器、运动控制器——机器人的「肌肉」",
-                "tickers": ["NOVT", "RBC", "AEIS", "AMETEK"],
+                "tickers": ["NOVT", "ROLL", "AEIS", "AMETEK"],  # RBC代码歧义(Rexnord已重组)，精密轴承正确代码是ROLL
             },
             {
                 "layer": 2,
                 "name": "功率半导体/驱动IC",
                 "desc": "SiC/GaN功率器件、马达驱动芯片",
-                "tickers": ["ON", "MPWR", "WOLF", "AEHR"],
+                "tickers": ["ON", "MPWR", "STM", "AEHR"],  # WOLF财务重组风险(2025年债务危机)，换STM(意法半导体SiC)
             },
             {
                 "layer": 1,

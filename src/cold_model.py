@@ -442,15 +442,19 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         gates["earnings_blackout"] = {"pass": True, "note": "财报日期未知，默认通过"}
 
     # ── 板块轮动背景门（非阻断，但影响评分） ──────────────
+    # 复用已下载的 info 字段，避免在 check_sector_gate 里重复发起 HTTP 请求
     try:
-        from .sector_rotation import check_sector_gate
-        sector_g = check_sector_gate(ticker)
-        gates["sector_rotation"] = sector_g
+        from .sector_rotation import check_sector_gate, _INDUSTRY_MAP, _SECTOR_MAP
+        precomputed_etf = (
+            _INDUSTRY_MAP.get(info.get("industry", ""))
+            or _SECTOR_MAP.get(info.get("sector", ""))
+        )
+        sector_g = check_sector_gate(ticker, sector_etf=precomputed_etf)
+        gates["sector_rotation"] = {"pass": sector_g["pass"], "note": sector_g["note"]}
+        gates["_sector_meta"]    = {k: sector_g.get(k) for k in ("rank", "etf", "accel", "heat")}
     except Exception:
         gates["sector_rotation"] = {"pass": True, "note": "板块门跳过（模块加载失败）"}
-
-    # ── 最终评分 ─────────────────────────────────────────
-    score = _calc_score(gates, vix_val, aggressive_mode)
+        gates["_sector_meta"]    = {}
 
     # ── PDT 检查（小账户核心保护） ───────────────────────
     pdt_status = check_pdt_risk(portfolio, account_type, day_trades_used)
@@ -473,9 +477,12 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             "note": pdt_trigger.get("note", "PDT检查通过"),
         }
 
-    # PDT gate 写入后再计算 hard_fail，确保 PDT 触发能走 ABORT 路径
+    # PDT gate 写入后计算 hard_fail，确保 PDT 触发能走 ABORT 路径
     hard_fail = [k for k, v in gates.items()
-                 if v.get("pass") is False]
+                 if k != "_sector_meta" and v.get("pass") is False]
+
+    # 所有 gate 写完后再算分，score 能完整看到全部门关状态（含 pdt_rule/earnings_quality）
+    score = _calc_score(gates, vix_val, aggressive_mode)
 
     # ── 激进模式额外加分项 ────────────────────────────────
     bonus = 0
@@ -835,14 +842,16 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
         base -= (5 if aggressive_mode else 10)
 
     # 板块轮动背景（非阻断，加减分）
-    sg = gates.get("sector_rotation", {})
+    # rank/accel/heat 存储在 _sector_meta 避免污染 sector_rotation gate 结构
+    sg      = gates.get("sector_rotation", {})
+    sg_meta = gates.get("_sector_meta", {})
     sg_pass = sg.get("pass", True)
-    rank    = sg.get("rank")
+    rank    = sg_meta.get("rank")
     if sg_pass == "warn":
         base -= 8    # 逆风板块扣分
     elif sg_pass is True and isinstance(rank, int) and rank <= 3:
         base += SECTOR_TOP_BONUS    # 顺风板块加分
-        if sg.get("accel"):
+        if sg_meta.get("accel"):
             base += SECTOR_ACCEL_BONUS  # 加速流入额外加分
 
     return max(0, min(100, base))
