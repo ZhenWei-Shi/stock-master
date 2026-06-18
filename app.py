@@ -847,6 +847,25 @@ def api_capital_flow():
         return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
 
+@app.route("/api/sector-rotation")
+def api_sector_rotation():
+    """
+    板块轮动仪表盘：11大GICS板块 + 半导体/生物医药/国防 子行业
+    计算各板块相对SPY超额收益（1M/3M），输出当前主线、冷门板块、加速信号
+    ?force=1 强制刷新缓存（默认4小时缓存）
+    """
+    from src.sector_rotation import sector_rotation_report
+    force = request.args.get("force", "0") == "1"
+    try:
+        if force:
+            from src.sector_rotation import fetch_sector_rankings
+            fetch_sector_rankings(force=True)
+        result = sector_rotation_report()
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+
 @app.route("/api/dealer-delta")
 def api_dealer_delta():
     """

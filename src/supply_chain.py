@@ -128,7 +128,7 @@ CHAINS = {
                 "layer": 5,
                 "name": "电力基础设施",
                 "desc": "变压器、配电、UPS系统",
-                "tickers": ["VRT", "ETN", "HUBB", "ACHR"],
+                "tickers": ["VRT", "ETN", "HUBB"],
             },
             {
                 "layer": 4,
@@ -140,19 +140,169 @@ CHAINS = {
                 "layer": 3,
                 "name": "电网/电力供应",
                 "desc": "为数据中心供电的公用事业",
-                "tickers": ["NEE", "AEP", "CEG", "CCJ"],
+                "tickers": ["NEE", "AEP", "VST"],
             },
             {
                 "layer": 2,
                 "name": "核能/清洁电力",
                 "desc": "24/7稳定清洁电力，核电复兴",
-                "tickers": ["CEG", "VST", "CCJ", "NNE"],
+                "tickers": ["CEG", "NNE", "SMR"],
             },
             {
                 "layer": 1,
                 "name": "铀矿/燃料",
                 "desc": "核电燃料原材料",
                 "tickers": ["CCJ", "UEC", "DNN"],
+            },
+        ]
+    },
+
+    # ── 新增：GLP-1 / 减肥药革命供应链 ──────────────────────
+    "glp1": {
+        "name": "GLP-1减肥药供应链",
+        "desc": "从药物研发到患者给药的完整GLP-1产业链（年市场规模1000亿+）",
+        "layers": [
+            {
+                "layer": 7,
+                "name": "医保/PBM支付方",
+                "desc": "最终埋单的保险公司和药品福利管理商",
+                "tickers": ["CVS", "CI", "UNH"],
+            },
+            {
+                "layer": 6,
+                "name": "医院/零售药房分销",
+                "desc": "GLP-1药品的分发渠道",
+                "tickers": ["MCK", "ABC", "CAH"],
+            },
+            {
+                "layer": 5,
+                "name": "GLP-1原研药企",
+                "desc": "当前行业最热卡脖子层：Ozempic/Wegovy/Zepbound垄断",
+                "tickers": ["LLY", "NVO"],
+            },
+            {
+                "layer": 4,
+                "name": "给药装置/并发症管理",
+                "desc": "自动注射笔、血糖仪、心血管监测（GLP-1患者需要）",
+                "tickers": ["DXCM", "PODD", "NTRA", "ITGR"],
+            },
+            {
+                "layer": 3,
+                "name": "合同研究/CDMO生产",
+                "desc": "委托生产GLP-1多肽活性成分（产能严重不足）",
+                "tickers": ["CTLT", "MEDP", "WCG"],
+            },
+            {
+                "layer": 2,
+                "name": "生物工具/API化学合成",
+                "desc": "多肽合成试剂、色谱纯化设备、酶工程",
+                "tickers": ["TMO", "BRKR", "AMGN"],
+            },
+            {
+                "layer": 1,
+                "name": "基因/蛋白质工具",
+                "desc": "靶点发现、基因组学、蛋白质结构研究工具",
+                "tickers": ["ILMN", "A", "REGN"],
+            },
+        ]
+    },
+
+    # ── 新增：国防航天供应链 ─────────────────────────────────
+    "defense": {
+        "name": "国防航天供应链",
+        "desc": "从稀有金属到武器系统的完整国防产业链（地缘政治驱动）",
+        "layers": [
+            {
+                "layer": 7,
+                "name": "政府/北约盟国（终端买家）",
+                "desc": "国防预算无弹性需求，地缘风险升温时无上限",
+                "tickers": ["LMT", "RTX", "NOC"],
+            },
+            {
+                "layer": 6,
+                "name": "系统集成主承包商",
+                "desc": "F-35/导弹/舰船整机集成商",
+                "tickers": ["LMT", "RTX", "NOC", "GD", "BA"],
+            },
+            {
+                "layer": 5,
+                "name": "太空/无人机/新域作战",
+                "desc": "商业航天、无人作战、超音速——国防新前沿",
+                "tickers": ["RKLB", "KTOS", "JOBY", "ACHR"],
+            },
+            {
+                "layer": 4,
+                "name": "情报/网络安全/C4ISR",
+                "desc": "指控通信情报监视侦察系统（信息化战争核心）",
+                "tickers": ["BAH", "CACI", "SAIC", "LDOS"],
+            },
+            {
+                "layer": 3,
+                "name": "推进系统/精密结构",
+                "desc": "火箭发动机、反应堆推进（潜艇）、精密机加工",
+                "tickers": ["BWXT", "HII", "TDY", "AXON"],
+            },
+            {
+                "layer": 2,
+                "name": "先进材料/复合材料",
+                "desc": "碳纤维复合材料、钛合金结构件",
+                "tickers": ["HXL", "CRS", "TXT"],
+            },
+            {
+                "layer": 1,
+                "name": "稀土/战略原材料",
+                "desc": "磁铁稀土（制导系统）、锂（电池）、铀（核推进）",
+                "tickers": ["MP", "UUUU", "ALB"],
+            },
+        ]
+    },
+
+    # ── 新增：机器人自动化供应链 ─────────────────────────────
+    "robotics": {
+        "name": "机器人自动化供应链",
+        "desc": "从稀土磁铁到手术机器人/工业自动化的完整产业链",
+        "layers": [
+            {
+                "layer": 7,
+                "name": "终端用户（汽车/物流/医院）",
+                "desc": "最终部署自动化的行业，需求端",
+                "tickers": ["AMZN", "F", "GM", "HCA"],
+            },
+            {
+                "layer": 6,
+                "name": "系统集成/工业软件",
+                "desc": "数字孪生、仿真、PLC编程软件",
+                "tickers": ["PTC", "ANSS", "ROK", "EMR"],
+            },
+            {
+                "layer": 5,
+                "name": "机器人本体/末端执行",
+                "desc": "手术机器人、协作机器人、测试设备",
+                "tickers": ["ISRG", "TER", "BRKS", "MBOT"],
+            },
+            {
+                "layer": 4,
+                "name": "计算机视觉/传感器",
+                "desc": "机器视觉、激光雷达、工业相机——机器人的「眼睛」",
+                "tickers": ["CGNX", "KEYS", "MKSI", "AMBA"],
+            },
+            {
+                "layer": 3,
+                "name": "运动控制/伺服驱动",
+                "desc": "精密伺服电机、编码器、运动控制器——机器人的「肌肉」",
+                "tickers": ["NOVT", "RBC", "AEIS", "AMETEK"],
+            },
+            {
+                "layer": 2,
+                "name": "功率半导体/驱动IC",
+                "desc": "SiC/GaN功率器件、马达驱动芯片",
+                "tickers": ["ON", "MPWR", "WOLF", "AEHR"],
+            },
+            {
+                "layer": 1,
+                "name": "稀土磁铁/精密材料",
+                "desc": "钕铁硼永磁体（伺服电机核心）、精密轴承钢",
+                "tickers": ["MP", "UUUU", "ARNC"],
             },
         ]
     }

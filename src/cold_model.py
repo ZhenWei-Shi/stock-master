@@ -116,6 +116,8 @@ SMF_BULL_BONUS              = 10       # 机构资金流入加分
 SMF_BEAR_PENALTY            = 8        # 机构资金流出扣分
 SQUEEZE_BONUS               = 5        # 逼空信号加分
 SQUEEZE_SCORE_MIN           = 60       # 触发加分的最低逼空分
+SECTOR_TOP_BONUS            = 5        # 板块前3名加分
+SECTOR_ACCEL_BONUS          = 3        # 板块加速流入额外加分
 
 # ── 回测/扫描限制 ─────────────────────────────────────────────
 SCAN_TICKER_LIMIT           = 20       # 单次批量扫描最多20只
@@ -438,6 +440,14 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             gates["earnings_blackout"] = {"pass": True, "note": "无近期财报记录"}
     except Exception:
         gates["earnings_blackout"] = {"pass": True, "note": "财报日期未知，默认通过"}
+
+    # ── 板块轮动背景门（非阻断，但影响评分） ──────────────
+    try:
+        from .sector_rotation import check_sector_gate
+        sector_g = check_sector_gate(ticker)
+        gates["sector_rotation"] = sector_g
+    except Exception:
+        gates["sector_rotation"] = {"pass": True, "note": "板块门跳过（模块加载失败）"}
 
     # ── 最终评分 ─────────────────────────────────────────
     score = _calc_score(gates, vix_val, aggressive_mode)
@@ -823,5 +833,16 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
         base -= 15
     elif vix > 28:
         base -= (5 if aggressive_mode else 10)
+
+    # 板块轮动背景（非阻断，加减分）
+    sg = gates.get("sector_rotation", {})
+    sg_pass = sg.get("pass", True)
+    rank    = sg.get("rank")
+    if sg_pass == "warn":
+        base -= 8    # 逆风板块扣分
+    elif sg_pass is True and isinstance(rank, int) and rank <= 3:
+        base += SECTOR_TOP_BONUS    # 顺风板块加分
+        if sg.get("accel"):
+            base += SECTOR_ACCEL_BONUS  # 加速流入额外加分
 
     return max(0, min(100, base))
