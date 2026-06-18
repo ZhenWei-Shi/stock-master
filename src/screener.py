@@ -7,6 +7,7 @@
 """
 import yfinance as yf
 import numpy as np
+import pandas as pd
 
 # ── S&P 500 代表性宇宙（约 120 只，覆盖全部 GICS 板块）
 # 足够计算准确百分位，避免下载 500 只造成超时
@@ -82,13 +83,23 @@ MIN_CLOSE_PRICE             = 0.01     # 防止除以极小价格
 
 
 def _oneil_score(hist) -> float:
-    """O'Neil 加权收益分：0.4×3mo + 0.2×6mo + 0.2×9mo + 0.2×12mo"""
-    def r(days):
-        if len(hist) < days:
+    """O'Neil 加权收益分：使用区间回报（非累积），避免近期涨幅重复叠加
+    段1：最近3月（0-63天）权重40%
+    段2：3-6月段（63-126天）权重20%
+    段3：6-9月段（126-189天）权重20%
+    段4：9-12月段（189-252天）权重20%
+    """
+    c = hist["Close"]
+    n = len(c)
+    def seg(start, end):
+        if n < end:
             return 0.0
-        return float((hist["Close"].iloc[-1] - hist["Close"].iloc[-days])
-                     / max(hist["Close"].iloc[-days], 0.01))
-    return 0.4*r(63) + 0.2*r(126) + 0.2*r(189) + 0.2*r(252)
+        base = float(c.iloc[-end])
+        return float((c.iloc[-start] - base) / max(base, 0.01))
+    return (ONEIL_WEIGHT_3MO  * seg(1,   ONEIL_3MO_DAYS)
+          + ONEIL_WEIGHT_6MO  * seg(ONEIL_3MO_DAYS, ONEIL_6MO_DAYS)
+          + ONEIL_WEIGHT_9MO  * seg(ONEIL_6MO_DAYS, ONEIL_9MO_DAYS)
+          + ONEIL_WEIGHT_12MO * seg(ONEIL_9MO_DAYS, ONEIL_12MO_DAYS))
 
 
 def _fetch_universe_scores() -> list:
@@ -194,17 +205,17 @@ def liquidity_gate(info: dict, account_value: float = 100_000) -> dict:
     avg_vol = int(avg_vol)
 
     if account_value < 25_000:
-        min_vol = 500_000   # 小账户要求更高流动性
+        min_vol = LIQUIDITY_VOL_MIN_SMALL
     else:
-        min_vol = 100_000   # 大账户容忍度略宽
+        min_vol = LIQUIDITY_VOL_MIN_LARGE
 
-    if avg_vol >= 2_000_000:
+    if avg_vol >= LIQUIDITY_VOL_EXCELLENT:
         status = "pass"
         note   = f"日均成交量 {avg_vol/1e6:.1f}M，流动性极佳，买卖价差极低"
     elif avg_vol >= min_vol:
         status = "pass"
         note   = f"日均成交量 {avg_vol/1000:.0f}K，流动性达标"
-    elif avg_vol >= 100_000:
+    elif avg_vol >= LIQUIDITY_VOL_MIN_LARGE:
         status = "warn" if account_value >= 25_000 else "fail"
         note   = (f"日均成交量 {avg_vol/1000:.0f}K，偏低——"
                   f"{'小账户' if account_value < 25_000 else ''}建议使用限价单，滑点风险")
@@ -233,11 +244,14 @@ def nine_gates_check(info: dict, rs_result: dict, market_state: dict,
     # ── 关卡1：大盘方向（自动，最快，全面否决）──────────────
     state = market_state.get("state", "E")
     dist  = market_state.get("distribution_days", 0)
-    dist_warn = dist >= 4
+    dist_warn = dist >= GATE_DIST_DAYS_WARN
 
-    if state in ("A", "D") and not dist_warn:
+    if state == "A" and not dist_warn:
         gates.append(_gate(1, "大盘方向", "pass",
-            f"市场状态 {state}，分发日 {dist}/25，趋势健康"))
+            f"市场状态 A（上升趋势），分发日 {dist}/25，趋势健康"))
+    elif state == "D" and not dist_warn:
+        gates.append(_gate(1, "大盘方向", "warn",
+            f"市场状态 D（极度恐慌，VIX>30），仓位减半，等待 FTD 底部确认后再做多"))
     elif state in ("A", "D") and dist_warn:
         gates.append(_gate(1, "大盘方向", "warn",
             f"市场状态 {state}，但已累计 {dist} 个分发日（≥4警惕机构出货）"))
@@ -252,12 +266,12 @@ def nine_gates_check(info: dict, rs_result: dict, market_state: dict,
     rs = rs_result.get("rs_rating")
     grade = rs_result.get("grade", "")
     if rs is not None:
-        if rs >= 85:
+        if rs >= RS_PASS_THRESHOLD:
             gates.append(_gate(2, "相对强度 RS", "pass",
                 f"RS={rs}（{grade}），跑赢 {rs}% 的 S&P500 成分股"))
-        elif rs >= 70:
+        elif rs >= RS_WARN_THRESHOLD:
             gates.append(_gate(2, "相对强度 RS", "warn",
-                f"RS={rs}（{grade}），尚可但未达 O'Neil ≥85 标准"))
+                f"RS={rs}（{grade}），尚可但未达 O'Neil ≥{RS_PASS_THRESHOLD} 标准"))
         else:
             gates.append(_gate(2, "相对强度 RS", "fail",
                 f"RS={rs}（{grade}），跑输大多数股票，O'Neil 直接淘汰"))
@@ -269,10 +283,10 @@ def nine_gates_check(info: dict, rs_result: dict, market_state: dict,
     inst = info.get("institutionPercentHeld") or info.get("institutional_ownership")
     if inst is not None:
         inst_pct = float(inst) * 100 if float(inst) <= 1 else float(inst)
-        if inst_pct > 40:
+        if inst_pct > GATE_INST_PASS * 100:
             gates.append(_gate(3, "机构持仓", "pass",
                 f"机构持仓 {inst_pct:.1f}%，主力认可，查13F确认增减持趋势"))
-        elif inst_pct > 15:
+        elif inst_pct > GATE_INST_WARN * 100:
             gates.append(_gate(3, "机构持仓", "warn",
                 f"机构持仓 {inst_pct:.1f}%，偏低，需查13F确认是否在增持"))
         else:
@@ -304,14 +318,13 @@ def nine_gates_check(info: dict, rs_result: dict, market_state: dict,
         "成熟公司靠分红，成长公司靠增速，策略完全不同。"))
 
     # ── 关卡8：财报验证（半自动）────────────────────────────
-    eps_beat = info.get("earningsBeat")
     rev_growth = info.get("revenueGrowth")
     if rev_growth is not None:
         rg = float(rev_growth) * 100
-        if rg > 25:
+        if rg > GATE_REV_PASS * 100:
             gates.append(_gate(8, "财报验证", "pass",
                 f"营收 YoY +{rg:.0f}%，成长加速，投资论文有数据支撑"))
-        elif rg > 10:
+        elif rg > GATE_REV_WARN * 100:
             gates.append(_gate(8, "财报验证", "warn",
                 f"营收 YoY +{rg:.0f}%，成长但未加速，注意趋势是否减速"))
         else:
@@ -323,10 +336,10 @@ def nine_gates_check(info: dict, rs_result: dict, market_state: dict,
             "超预期幅度 >5% 且指引上调 = 高质量财报"))
 
     # ── 关卡9：期权 Gamma 结构（自动）───────────────────────
-    if gamma_score >= 6:
+    if gamma_score >= GATE_GAMMA_PASS:
         gates.append(_gate(9, "期权/Gamma结构", "pass",
             f"Gamma Squeeze 评分 {gamma_score}/10，做市商净Delta压力支撑上行"))
-    elif gamma_score >= 3:
+    elif gamma_score >= GATE_GAMMA_WARN:
         gates.append(_gate(9, "期权/Gamma结构", "warn",
             f"Gamma 评分 {gamma_score}/10，期权结构中性，无额外助力"))
     elif gamma_score > 0:

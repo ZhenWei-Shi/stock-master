@@ -86,10 +86,10 @@ def detect_vcp(hist: pd.DataFrame) -> dict:
     for i in range(1, len(pivot_highs)):
         ph_idx  = pivot_highs[i - 1]
         ph2_idx = pivot_highs[i]
-        # 两个高点之间的最低点
-        seg_lows  = [float(c.iloc[j]) for j in range(ph_idx, ph2_idx + 1)]
+        # 用 High/Low 计算回调幅度（收盘价会低估实际波动）
+        seg_lows  = [float(h.iloc[j]) for j in range(ph_idx, ph2_idx + 1)]
         low_val   = min(seg_lows)
-        high_val  = float(c.iloc[ph_idx])
+        high_val  = float(h.iloc[ph_idx])
         drawdown  = (high_val - low_val) / high_val * 100
 
         # 对应成交量均值
@@ -107,25 +107,28 @@ def detect_vcp(hist: pd.DataFrame) -> dict:
         return {"detected": False, "reason": "收缩次数不足（需≥2次回调）"}
 
     # ── 验证收缩性（每次回调比上次小）──────────────────
-    dd_list  = [ct["drawdown_pct"] for ct in contractions[-3:]]
+    dd_all   = [ct["drawdown_pct"] for ct in contractions]
     vol_list = [ct["avg_vol"]      for ct in contractions[-3:]]
+    dd_list  = dd_all[-3:]
 
-    dd_contracting  = all(dd_list[i] < dd_list[i-1] for i in range(1, len(dd_list)))
-    vol_contracting = all(vol_list[i] < vol_list[i-1] for i in range(1, len(vol_list)))
+    dd_contracting      = all(dd_list[i] < dd_list[i-1] for i in range(1, len(dd_list)))
+    latest_is_smallest  = dd_list[-1] == min(dd_all) if dd_list else False
+    vol_contracting     = all(vol_list[i] < vol_list[i-1] for i in range(1, len(vol_list)))
 
     # ── 当前位置检查 ─────────────────────────────────────
-    recent_high   = float(c.tail(30).max())
+    recent_high   = float(c.max())   # 整个 80 天窗口最高点
     pct_from_high = (price - recent_high) / recent_high * 100
 
-    # 最近 5 天成交量萎缩
+    # 最近 5 天成交量萎缩（Minervini 标准：≤75% 均量为真正蓄力）
     vol_recent5 = float(v.tail(5).mean())
     vol_ma20    = float(v.tail(20).mean())
-    vol_dry     = 0.4 <= (vol_recent5 / vol_ma20) <= 0.85 if vol_ma20 > 0 else False
+    vol_dry     = 0.20 <= (vol_recent5 / vol_ma20) <= 0.75 if vol_ma20 > 0 else False
 
     latest_dd = dd_list[-1] if dd_list else 99
 
     detected = (
         dd_contracting
+        and latest_is_smallest
         and len(contractions) >= 2
         and pct_from_high > -12
         and latest_dd < 15
@@ -212,7 +215,8 @@ def detect_cup_handle(hist: pd.DataFrame) -> dict:
 
     handle_ok = handle_depth <= 12 and handle_vol_dry
 
-    pivot = cup_high_left * 1.005
+    # O'Neil 标准：突破点是柄的最高点 + 0.5%（非杯左高点）
+    pivot = handle_high * 1.005
 
     detected = cup_ok and handle_ok and price > cup_high_right * 0.93
 

@@ -230,13 +230,19 @@ def _bull_analyst(info, hist, close, volume, price, direction, cold_result) -> d
 # ─────────────────────────────────────────────────────────────
 
 def _bear_analyst(info, hist, close, volume, price, direction, cold_result) -> dict:
-    args      = []
-    risk_pts  = 0
+    args           = []
+    risk_pts       = 0
+    risk_pts_high  = 0
+    risk_pts_mid   = 0
 
     def add_risk(title, detail, severity, evidence=None):
-        nonlocal risk_pts
+        nonlocal risk_pts, risk_pts_high, risk_pts_mid
         sev_pts = {"高": 3, "中": 2, "低": 1}.get(severity, 1)
         risk_pts += sev_pts
+        if severity == "高":
+            risk_pts_high += sev_pts
+        elif severity == "中":
+            risk_pts_mid  += sev_pts
         args.append({
             "risk":     title,
             "detail":   detail,
@@ -317,8 +323,10 @@ def _bear_analyst(info, hist, close, volume, price, direction, cold_result) -> d
     return {
         "analyst":   "看空分析师 · 魔鬼代言人（Bear/Devil's Advocate）",
         "risks":     args,
-        "risk_pts":  risk_pts,
-        "severity":  bear_severity,
+        "risk_pts":      risk_pts,
+        "risk_pts_high": risk_pts_high,
+        "risk_pts_mid":  risk_pts_mid,
+        "severity":      bear_severity,
         "summary": (
             f"发现 {len(args)} 项风险因素，风险总分{risk_pts}。"
             f"{'风险较大，需要特别强的做多理由才能入场' if risk_pts >= 8 else '风险可控，但务必设好止损'}"
@@ -366,11 +374,16 @@ def _risk_officer(info, hist, close, price, account_value, cold_result) -> dict:
         pos_usd      = account_value * 0.30
         stop_pct     = 3.0
 
-    # Kelly 建议（假设60%胜率，3:1盈亏比）
-    W, R       = 0.60, 3.0
+    # Kelly 建议（用保守默认值；实盘后请替换为实测胜率/盈亏比）
+    # 注：用户实测胜率53%、盈亏比参考2.0（短线摆动更保守）
+    W, R       = 0.53, 2.0
     full_kelly = W - (1 - W) / R
-    half_kelly = full_kelly / 2
+    half_kelly = max(0, full_kelly / 2)  # Kelly 为负时仓位归零
     kelly_usd  = account_value * half_kelly
+
+    kelly_warning = ""
+    if full_kelly <= 0:
+        kelly_warning = f"⚠️ Kelly为负({full_kelly*100:.1f}%)！W={W*100:.0f}%/R={R}组合期望值为负，不建议入场。"
 
     # 风险破产概率（简化估算）
     edge       = W * R - (1 - W)
@@ -389,11 +402,13 @@ def _risk_officer(info, hist, close, price, account_value, cold_result) -> dict:
         },
         "kelly_criterion": {
             "formula":    "Kelly% = W - (1-W)/R",
-            "inputs":     f"W=60%（假设胜率），R=3（盈亏比）",
+            "inputs":     f"W={W*100:.0f}%（实测胜率近似），R={R}（保守盈亏比）",
             "full_kelly": round(full_kelly * 100, 1),
             "half_kelly": round(half_kelly * 100, 1),
             "half_kelly_usd": round(kelly_usd, 2),
+            "warning":    kelly_warning,
             "recommendation": (
+                kelly_warning if kelly_warning else
                 f"半Kelly建议仓位：${kelly_usd:.0f}（账户{half_kelly*100:.0f}%）。"
                 "使用半Kelly以保护本金，等实际胜率统计后再调整。"
             ),
@@ -415,8 +430,11 @@ def _arbitrator(bull: dict, bear: dict, risk: dict, direction: str) -> dict:
     bull_pct  = bull.get("score_pct", 0)
     risk_pts  = bear.get("risk_pts", 0)
 
-    # 综合评分：看多强度 - 看空风险惩罚
-    penalty   = min(30, risk_pts * 3)
+    # 区分个股特有风险（高权重）与行业背景风险（低权重），避免线性累积偏向 WAIT
+    high_risk = bear.get("risk_pts_high", 0)
+    mid_risk  = bear.get("risk_pts_mid",  0)
+    low_risk  = risk_pts - high_risk - mid_risk
+    penalty   = min(25, high_risk * 5 + mid_risk * 2 + max(0, low_risk) * 0)
     net_score = max(0, bull_pct - penalty)
 
     if net_score >= 70 and risk_pts <= 5:

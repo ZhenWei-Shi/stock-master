@@ -37,6 +37,7 @@ os.makedirs(_DATA, exist_ok=True)
 # ── 滑点配置 ─────────────────────────────────────────────────
 DEFAULT_SLIPPAGE_PCT        = 0.05     # 默认滑点（市价单，大盘股）
 MAX_SLIPPAGE_PCT            = 1.0      # 最大允许滑点（拦截异常输入）
+MAX_POSITION_PCT            = 0.50     # 单仓上限（账户净值50%）
 
 # ── 熔断器 ───────────────────────────────────────────────────
 CB_LOSS_TRIGGER             = 5        # 连续亏损N笔触发熔断
@@ -126,7 +127,7 @@ def open_position(ticker: str, shares: int, entry_price: float,
     """
     if entry_price <= 0 or not np.isfinite(entry_price):
         return {"ok": False, "error": f"入场价无效：{entry_price}"}
-    if shares <= 0 or not isinstance(shares, (int, float)):
+    if not isinstance(shares, (int, float)) or shares <= 0:
         return {"ok": False, "error": f"手数无效：{shares}"}
     slippage_pct = max(0.0, min(MAX_SLIPPAGE_PCT, slippage_pct))
 
@@ -142,6 +143,13 @@ def open_position(ticker: str, shares: int, entry_price: float,
     exec_price   = entry_price * (1 + slippage_pct / 100)
     total_cost   = exec_price * shares
     available    = acct.get("cash", 0)
+
+    # 单仓上限：不超过账户净值 50%
+    acct_value    = acct.get("current_value") or available
+    max_single    = acct_value * MAX_POSITION_PCT
+    if total_cost > max_single:
+        return {"ok": False,
+                "error": f"超出单仓上限（账户{MAX_POSITION_PCT*100:.0f}%=${max_single:.2f}），请减少股数"}
 
     if total_cost > available:
         return {"ok": False, "error": f"资金不足：需${total_cost:.2f}，可用${available:.2f}"}
@@ -246,9 +254,9 @@ def close_position(trade_id: str, exit_price: float,
     else:
         cb["consecutive_losses"] = 0
 
-    if cb["consecutive_losses"] >= 5:
+    if cb["consecutive_losses"] >= CB_LOSS_TRIGGER:
         cb["active"] = True
-        cb["reason"] = "连续亏损5笔，强制暂停1周"
+        cb["reason"] = f"连续亏损{CB_LOSS_TRIGGER}笔，强制暂停1周"
 
     # 更新账户总值
     total_open = sum(
@@ -262,7 +270,7 @@ def close_position(trade_id: str, exit_price: float,
     peak = acct["peak_value"]
     dd_pct = (acct["current_value"] - peak) / peak * 100 if peak > 0 else 0.0
     cb["max_drawdown_pct"] = round(min(cb.get("max_drawdown_pct", 0), dd_pct), 2)
-    if dd_pct < -10:
+    if dd_pct < CB_DRAWDOWN_TRIGGER:
         cb["active"] = True
         cb["reason"] = f"最大回撤达{abs(dd_pct):.1f}%，超过10%熔断线"
 
@@ -405,7 +413,15 @@ def mark_to_market(mode: str = "paper") -> dict:
     acct = data.get("account", {})
     cash = acct.get("cash", 0)
     total_val = round(cash + total_pos_val, 2)
-    dd_pct    = (total_val - acct.get("peak_value", total_val)) / acct.get("peak_value", total_val) * 100
+
+    # 更新历史峰值并持久化，确保两次平仓之间的浮盈高点不丢失
+    if total_val > acct.get("peak_value", 0):
+        acct["peak_value"] = total_val
+        data["account"] = acct
+        _save(data, path)
+
+    peak  = acct.get("peak_value", total_val)
+    dd_pct = (total_val - peak) / peak * 100 if peak > 0 else 0.0
 
     return {
         "ok":             True,
@@ -443,17 +459,25 @@ def performance_report(mode: str = "paper") -> dict:
     pnls     = [t["pnl"] for t in trades]
     pnl_pcts = [t["pnl_pct"] for t in trades if "pnl_pct" in t]
 
-    wins     = [p for p in pnls if p > 0]
-    losses   = [p for p in pnls if p < 0]
     total    = len(pnls)
-    win_rate = len(wins) / total if total > 0 else 0
-    avg_win  = float(np.mean(wins))  if wins   else 0
-    avg_loss = float(np.mean(losses)) if losses else 0
-    # 全胜时 avg_loss==0：用大值代替 inf，避免 JSON 序列化失败
+    win_rate = sum(1 for p in pnls if p > 0) / total if total > 0 else 0
+
+    # Kelly 盈亏比用 pnl_pct（百分比），避免大仓位主导均值
+    if pnl_pcts:
+        win_pcts  = [p for p in pnl_pcts if p > 0]
+        loss_pcts = [p for p in pnl_pcts if p < 0]
+        avg_win   = float(np.mean(win_pcts))  if win_pcts  else 0
+        avg_loss  = float(np.mean(loss_pcts)) if loss_pcts else 0
+    else:
+        wins     = [p for p in pnls if p > 0]
+        losses   = [p for p in pnls if p < 0]
+        avg_win  = float(np.mean(wins))  if wins   else 0
+        avg_loss = float(np.mean(losses)) if losses else 0
+
     if avg_loss != 0:
         rr_ratio = abs(avg_win / avg_loss)
     elif avg_win > 0:
-        rr_ratio = 99.9  # 无亏损记录，极高盈亏比（样本不足）
+        rr_ratio = RR_RATIO_FALLBACK
     else:
         rr_ratio = 0.0
 

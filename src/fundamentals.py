@@ -168,14 +168,18 @@ def get_analyst_ratings(ticker: str) -> dict:
 # ── 新闻情绪 v2（否定词修复）────────────────────────────────
 _BULL = {"beat","surge","rally","upgrade","buy","record","growth","exceed","above",
          "bullish","outperform","raise","profit","positive","strong","soar","jump",
-         "spike","boom","breakout","win","gain","top","high"}
+         "spike","boom","breakout","win","gain","top","high",
+         "buyback","repurchase","dividend","partnership","contract","awarded",
+         "approval","approved","topped","exceeded"}
 _BEAR = {"miss","drop","fall","downgrade","sell","loss","below","concern","cut",
          "reduce","bearish","underperform","layoff","negative","weak","decline",
-         "crash","warn","warning","probe","investigation","fraud","collapse","tank"}
+         "crash","warn","warning","probe","investigation","fraud","collapse","tank",
+         "fails","failed","missing","disappoints","disappointing",
+         "recall","default","bankruptcy","resign","fired","subpoena","lawsuit",
+         "dilution","offering"}
 
-# 否定词：出现在正面词前面时，翻转极性
-_NEGATORS = {"not","no","never","didn't","didn't","won't","can't","cannot",
-             "fails","failed","missing","below","despite","disappoints","disappointing"}
+# 否定词：严格限于语法否定词，语义失败词已移入 _BEAR
+_NEGATORS = {"not", "no", "never", "didn't", "won't", "can't", "cannot"}
 
 def _score_title(title: str) -> int:
     """
@@ -249,11 +253,26 @@ def get_insider_trades(ticker: str) -> dict:
                 "value":       int(float(val)) if val is not None and _valid(val) else None,
             })
 
-        buys  = [t for t in trades if "purchase" in t["transaction"].lower() or "acquisition" in t["transaction"].lower()]
-        sells = [t for t in trades if "sale"     in t["transaction"].lower()]
-        sig   = ("bullish" if len(buys) > len(sells)
-                 else "bearish" if len(sells) > len(buys) * 2 else "neutral")
+        # 过滤期权行权（非真实买卖意愿），按金额而非笔数判断方向
+        def is_exercise(t): return "exercise" in t["transaction"].lower()
+        buy_val  = sum(t["value"] or 0 for t in trades
+                       if ("purchase" in t["transaction"].lower()
+                           or "acquisition" in t["transaction"].lower())
+                       and not is_exercise(t))
+        sell_val = sum(t["value"] or 0 for t in trades
+                       if "sale" in t["transaction"].lower() and not is_exercise(t))
+        buys  = [t for t in trades if "purchase" in t["transaction"].lower() and not is_exercise(t)]
+        sells = [t for t in trades if "sale"     in t["transaction"].lower() and not is_exercise(t)]
+        if buy_val > 0 and sell_val == 0:
+            sig = "bullish_strong"
+        elif buy_val > 0 and buy_val > sell_val * 1.5:
+            sig = "bullish"
+        elif sell_val > buy_val * 1.5:
+            sig = "bearish"
+        else:
+            sig = "neutral"
         return {"trades": trades[:10], "buys": len(buys), "sells": len(sells),
+                "buy_value": buy_val, "sell_value": sell_val,
                 "signal": sig, "source": "yfinance"}
     except Exception:
         return _sec_insider(ticker)

@@ -190,8 +190,8 @@ def detect_capital_flow(chain_id: str) -> dict:
 
     layers = chain["layers"]
 
-    # ── 批量拉取所有 ticker 的行情 ────────────────────────────
-    all_tickers = list({tk for layer in layers for tk in layer["tickers"]})
+    # ── 批量拉取所有 ticker 的行情（含 SPY 基准，避免额外单独请求）────
+    all_tickers = list({tk for layer in layers for tk in layer["tickers"]} | {"SPY"})
     try:
         raw = yf.download(
             " ".join(all_tickers),

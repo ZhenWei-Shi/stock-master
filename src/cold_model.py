@@ -187,27 +187,23 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     price = float(close.iloc[-1])
 
     # ── Gate A：市场时间窗口 ──────────────────────────────
-    total_min = now.hour * 60 + now.minute
-    market_open  = 570   # 09:30 ET
-    market_close = 960   # 16:00 ET
+    total_min  = now.hour * 60 + now.minute
     is_weekend = now.weekday() >= 5
 
-    # 激进/摆动模式放宽：只屏蔽开盘头5分钟，收盘前5分钟
-    # 因为摆动交易者可以在收盘前买入持有过夜，不存在隔夜风险回避需求
     if aggressive_mode or not is_intraday:
-        no_entry_open  = total_min < market_open + 5
-        no_entry_close = total_min > market_close - 5
+        no_entry_open  = total_min < MARKET_OPEN_MIN + OPEN_BUFFER_AGG
+        no_entry_close = total_min > MARKET_CLOSE_MIN - CLOSE_BUFFER_AGG
         open_note  = "开盘前5分钟（流动性陷阱），禁止入场"
         close_note = "收盘前5分钟，市价单滑点过大"
     else:
-        no_entry_open  = total_min < market_open + 15
-        no_entry_close = total_min > market_close - 20
-        open_note  = "开盘前15分钟（流动性陷阱），禁止入场"
-        close_note = "收盘前20分钟，禁止日内新仓（隔夜敞口）"
+        no_entry_open  = total_min < MARKET_OPEN_MIN + OPEN_BUFFER_STD
+        no_entry_close = total_min > MARKET_CLOSE_MIN - CLOSE_BUFFER_STD
+        open_note  = f"开盘前{OPEN_BUFFER_STD}分钟（流动性陷阱），禁止入场"
+        close_note = f"收盘前{CLOSE_BUFFER_STD}分钟，禁止日内新仓（隔夜敞口）"
 
     if is_weekend:
         gates["time_window"] = {"pass": False, "note": "周末市场关闭，无法交易"}
-    elif total_min < market_open or total_min >= market_close:
+    elif total_min < MARKET_OPEN_MIN or total_min >= MARKET_CLOSE_MIN:
         gates["time_window"] = {"pass": False, "note": "市场已关闭，做好计划等待开盘"}
     elif no_entry_open:
         gates["time_window"] = {"pass": False, "note": open_note}
@@ -235,14 +231,26 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     ma200 = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else None
 
     if direction == "LONG":
-        trend_pass = price > ma20 > ma50
-        if ma200:
-            trend_pass = trend_pass and price > ma200
+        if ma200 is not None:
+            # 完整多头排列：价格 > MA20 > MA50 > MA200（防死叉陷阱）
+            trend_pass = price > ma20 > ma50 > ma200
+            if not trend_pass:
+                if price > ma20 > ma50 and ma50 <= ma200:
+                    fail_reason = f"MA50({ma50:.2f})≤MA200({ma200:.2f})，中期均线死叉，禁止做多"
+                elif price <= ma200:
+                    fail_reason = f"价格低于MA200({ma200:.2f})，长期趋势向下"
+                else:
+                    fail_reason = f"趋势不支持做多：{'价格<MA20' if price < ma20 else 'MA20<MA50'}"
+            else:
+                fail_reason = ""
+        else:
+            trend_pass  = price > ma20 > ma50
+            fail_reason = f"趋势不支持做多：{'价格<MA20' if price < ma20 else 'MA20<MA50'}"
         gates["trend"] = {
             "pass": trend_pass,
-            "note": (f"多头排列：价格{price:.2f} > MA20({ma20:.2f}) > MA50({ma50:.2f})"
-                     if trend_pass else
-                     f"趋势不支持做多：{'价格<MA20' if price < ma20 else 'MA20<MA50'}"),
+            "note": (f"多头排列：{price:.2f} > MA20({ma20:.2f}) > MA50({ma50:.2f})"
+                     + (f" > MA200({ma200:.2f})" if ma200 is not None else "")
+                     if trend_pass else fail_reason),
         }
     else:
         trend_pass = price < ma20 < ma50
@@ -405,12 +413,18 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             import pandas as _pd
             days_to_earn = (_pd.Timestamp(next_earnings).tz_localize(None)
                             - _pd.Timestamp(now.replace(tzinfo=None))).days
-            if 0 <= days_to_earn <= 3:
+            if days_to_earn < 0:
+                # yfinance 财报日期未更新（返回上季度日期），视为安全但注明
+                gates["earnings_blackout"] = {
+                    "pass": True,
+                    "note": f"财报已过（{abs(days_to_earn)}天前），等待下季度日历更新",
+                }
+            elif days_to_earn <= 3:
                 gates["earnings_blackout"] = {
                     "pass": False,
                     "note": f"财报在 {days_to_earn} 天后！禁止建仓（不赌二元事件）",
                 }
-            elif 0 <= days_to_earn <= 7:
+            elif days_to_earn <= 7:
                 gates["earnings_blackout"] = {
                     "pass": "warn",
                     "note": f"财报在 {days_to_earn} 天后，建议等财报结果再行动",
@@ -461,8 +475,8 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         try:
             ret_3m = float((close.iloc[-1] - close.iloc[-63]) / close.iloc[-63]) if len(close) >= 63 else 0
             spy_hist = yf.Ticker("SPY").history(period="3mo")
-            spy_3m   = float((spy_hist["Close"].iloc[-1] - spy_hist["Close"].iloc[0])
-                              / spy_hist["Close"].iloc[0]) if not spy_hist.empty else 0
+            spy_3m   = float((spy_hist["Close"].iloc[-1] - spy_hist["Close"].iloc[-63])
+                              / spy_hist["Close"].iloc[-63]) if len(spy_hist) >= 63 else 0
             outperform = ret_3m - spy_3m
             if outperform > 0.15:
                 bonus += 10
@@ -618,9 +632,9 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         pos_size       = shares * price
         actual_risk    = shares * stop_d
 
-        # 期望值计算（假设激进模式 3:1 盈亏比，60%胜率）
-        win_rate  = 0.60
-        rr        = 3.0
+        # 期望值计算（使用配置常量，避免硬编码）
+        win_rate  = EV_WIN_RATE
+        rr        = EV_RR_RATIO
         ev        = win_rate * (rr * actual_risk) - (1 - win_rate) * actual_risk
         ev_pct    = ev / portfolio * 100
 

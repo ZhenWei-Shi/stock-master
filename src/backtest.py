@@ -297,10 +297,11 @@ def run_backtest(
     print(f"[回测] 有效交易日：{len(trading_days)} 天")
 
     # 账户状态
-    cash       = account
-    peak_value = account
-    positions  = {}   # trade_id → position dict
-    trade_log  = []   # 所有已平仓交易
+    cash          = account
+    peak_value    = account
+    positions     = {}   # trade_id → position dict
+    trade_log     = []   # 所有已平仓交易
+    daily_values  = []   # 逐日净值曲线（用于准确计算最大回撤）
 
     # 主循环：逐日模拟
     for i, signal_day in enumerate(trading_days[:-1]):  # 最后一天无法入场
@@ -370,61 +371,66 @@ def run_backtest(
         for tid in to_close:
             del positions[tid]
 
-        # 更新账户总值
-        pos_value = sum(
-            float((_get(p["ticker"]).loc[entry_day]["Close"]
-                   if not _get(p["ticker"]).empty and entry_day in _get(p["ticker"]).index
-                   else p["entry_price"])) * p["shares"]
-            for p in positions.values()
-        )
+        # 更新账户总值（用 signal_day 收盘价估值，避免 T+1 未来泄露）
+        pos_value = 0.0
+        for p in positions.values():
+            tk_df = _get(p["ticker"])
+            if not tk_df.empty and signal_day in tk_df.index:
+                pos_value += float(tk_df.loc[signal_day]["Close"]) * p["shares"]
+            else:
+                pos_value += p["entry_price"] * p["shares"]
         total_value = cash + pos_value
         peak_value  = max(peak_value, total_value)
+        daily_values.append(total_value)
 
         # 信号扫描（T 日收盘后，T+1 入场）
         if len(positions) >= max_positions:
             continue  # 仓位已满
 
-        entry_day_data_available = {}
+        # 先收集当日所有候选信号，按 score 降序开仓（高分优先）
+        candidates = []
         for ticker in tickers:
             tk_data = _get(ticker)
             if tk_data.empty:
                 continue
-            # 已有仓位的标的跳过
             if any(p["ticker"] == ticker for p in positions.values()):
                 continue
-            # T 日及之前的切片（严格不含 T+1）
             hist_slice = tk_data[tk_data.index <= signal_day]
             if len(hist_slice) < 55:
+                continue
+            if entry_day not in tk_data.index:
                 continue
 
             spy_slice = spy_data[spy_data.index <= signal_day]
             vix_slice = vix_close[vix_close.index <= signal_day].tail(5)
 
             sig = _check_entry_signal(hist_slice, vix_slice, spy_slice)
-            if not sig.get("signal"):
-                continue
+            if sig.get("signal"):
+                candidates.append((sig["score"], ticker, sig, tk_data.loc[entry_day]))
 
-            # T+1 日开盘价入场
-            if entry_day not in tk_data.index:
-                continue
-            entry_row   = tk_data.loc[entry_day]
+        candidates.sort(key=lambda x: x[0], reverse=True)
+
+        for score, ticker, sig, entry_row in candidates:
+            if len(positions) >= max_positions:
+                break
+
             entry_price = float(entry_row["Open"]) * (1 + slippage_pct / 100)
 
             # 仓位计算（3% 风险规则）
-            stop_pct   = sig["stop_loss_pct"] / 100
+            stop_pct    = sig["stop_loss_pct"] / 100
             risk_dollar = total_value * (risk_pct / 100)
-            stop_dist  = entry_price * stop_pct
+            stop_dist   = entry_price * stop_pct
             if stop_dist <= 0:
-                continue  # 止损距离无效，跳过此信号
-            shares     = max(1, int(risk_dollar / stop_dist))
-            cost       = shares * entry_price
-            max_pos_val = total_value * 0.50  # 单仓不超过账户 50%
+                continue
+            shares      = max(1, int(risk_dollar / stop_dist))
+            cost        = shares * entry_price
+            max_pos_val = total_value * 0.50
 
             if cost > cash or cost > max_pos_val:
                 shares = max(1, int(min(cash, max_pos_val) / entry_price))
                 cost   = shares * entry_price
                 if cost > cash:
-                    continue  # 资金不足
+                    continue
 
             stop_loss = round(entry_price * (1 - stop_pct), 4)
             target    = round(entry_price * (1 + stop_pct * target_rr), 4)
@@ -438,16 +444,13 @@ def run_backtest(
                 "shares":       shares,
                 "stop_loss":    stop_loss,
                 "target":       target,
-                "signal_score": sig["score"],
+                "signal_score": score,
             }
 
             if verbose:
                 print(f"  📈 开仓 {ticker} ×{shares}股 @ ${entry_price:.2f}  "
                       f"止损${stop_loss:.2f}  目标${target:.2f}  "
-                      f"信号分{sig['score']}  ({str(signal_day.date())}信号)")
-
-            if len(positions) >= max_positions:
-                break
+                      f"信号分{score}  ({str(signal_day.date())}信号)")
 
     # 强制平仓所有剩余仓位（回测结束日）
     last_day = trading_days[-1]
@@ -517,15 +520,15 @@ def run_backtest(
     if rr_ratio > 0:
         kelly_f = win_rate - (1 - win_rate) / rr_ratio
 
-    # 最大回撤（逐笔近似）
-    running_pnl = account
-    peak_bt     = account
-    max_dd      = 0.0
-    for t in trade_log:
-        running_pnl += t["pnl"]
-        peak_bt      = max(peak_bt, running_pnl)
-        dd           = (running_pnl - peak_bt) / peak_bt * 100
-        max_dd       = min(max_dd, dd)
+    # 最大回撤（逐日净值曲线法，包含持仓浮亏，比逐笔法更准确）
+    if daily_values:
+        import numpy as _np2
+        equity = _np2.array(daily_values)
+        peak_c = _np2.maximum.accumulate(equity)
+        dd_arr = (equity - peak_c) / peak_c * 100
+        max_dd = float(_np2.min(dd_arr))
+    else:
+        max_dd = 0.0
 
     # 平均持仓天数
     avg_hold = float(np.mean([t["hold_days"] for t in trade_log]))
