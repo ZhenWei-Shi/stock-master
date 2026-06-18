@@ -50,6 +50,10 @@ from src.smart_money import (full_smart_money_scan, detect_unusual_options,
                               calculate_gex, detect_short_squeeze,
                               smart_money_flow, institutional_momentum)
 from src.macro_filter import full_macro_report, get_economic_calendar, get_etf_signals
+from src.earnings_analyzer import (full_earnings_analysis, get_market_breadth,
+                                    check_position_correlation, analyze_eps_acceleration,
+                                    analyze_pead, analyze_quality_factors)
+from src.paper_trading import update_trailing_stop
 
 app = Flask(__name__)
 app.json_encoder = _NpEncoder
@@ -1261,6 +1265,108 @@ def api_agent_report():
     try:
         result = daily_report(mode)
         return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/earnings/<ticker>")
+def api_earnings(ticker):
+    """完整财报质量报告（CANSLIM评分 + EPS加速 + PEAD + 质量因子）"""
+    try:
+        result = full_earnings_analysis(ticker.upper())
+        return app.response_class(
+            response=json.dumps(result, ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/earnings/<ticker>/eps")
+def api_eps_acceleration(ticker):
+    """EPS加速度分析（季度超预期 + YoY加速趋势）"""
+    try:
+        return app.response_class(
+            response=json.dumps(analyze_eps_acceleration(ticker.upper()),
+                                ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/earnings/<ticker>/pead")
+def api_pead(ticker):
+    """财报后漂移分析（Post-Earnings Announcement Drift）"""
+    try:
+        return app.response_class(
+            response=json.dumps(analyze_pead(ticker.upper()),
+                                ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/earnings/<ticker>/quality")
+def api_earnings_quality(ticker):
+    """质量因子分析（ROE / 毛利率 / FCF质量 / 债务）"""
+    try:
+        return app.response_class(
+            response=json.dumps(analyze_quality_factors(ticker.upper()),
+                                ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/market/breadth")
+def api_market_breadth():
+    """市场宽度（板块MA50以上比例 + 个股MA200以上比例）"""
+    try:
+        result = get_market_breadth()
+        return app.response_class(
+            response=json.dumps(result, ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/portfolio/correlation")
+def api_correlation():
+    """
+    仓位相关性检查
+    ?new=NVDA&existing=AMD,AVGO,INTC
+    """
+    new_ticker   = request.args.get("new", "").upper()
+    existing_raw = request.args.get("existing", "")
+    existing     = [t.strip().upper() for t in existing_raw.split(",") if t.strip()]
+    if not new_ticker:
+        return jsonify({"ok": False, "error": "缺少 ?new= 参数"})
+    try:
+        result = check_position_correlation(new_ticker, existing)
+        return app.response_class(
+            response=json.dumps(result, ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/paper/trailing-stop", methods=["POST"])
+def api_trailing_stop():
+    """更新追踪止损 {trade_id, current_price, trail_pct, mode}"""
+    d = request.get_json(force=True) or {}
+    try:
+        result = update_trailing_stop(
+            trade_id      = d.get("trade_id", ""),
+            current_price = float(d.get("current_price", 0)),
+            trail_pct     = float(d.get("trail_pct", 8.0)),
+            mode          = d.get("mode", "paper"),
+        )
+        return jsonify(result)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 

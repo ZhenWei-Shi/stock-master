@@ -382,6 +382,46 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             bonus += 8
             bonus_notes.append(f"营收加速 {float(rev_growth)*100:.0f}%（+8分）")
 
+    # ── 财报质量门（EPS加速度 + CANSLIM + PEAD）─────────────
+    try:
+        from .earnings_analyzer import full_earnings_analysis, check_position_correlation
+        ea = full_earnings_analysis(ticker)
+        if ea.get("ok"):
+            cs_score = ea.get("canslim_score", 0)
+            grade    = ea.get("overall_grade", "")
+            # CANSLIM A级财报 → 大加分
+            if cs_score >= 80:
+                bonus += 15
+                bonus_notes.append(f"财报A级（CANSLIM{cs_score}分，+15）")
+            elif cs_score >= 60:
+                bonus += 8
+                bonus_notes.append(f"财报B级（CANSLIM{cs_score}分，+8）")
+            # 财报D级 + 方向做多 → 扣分
+            elif cs_score < 40 and direction == "LONG":
+                bonus -= 12
+                bonus_notes.append(f"财报D级（CANSLIM{cs_score}分，-12）")
+
+            # PEAD 信号（财报后漂移）
+            pead = ea.get("pead", {})
+            if pead.get("ok") and pead.get("latest_surprise_pct", 0) > 5:
+                cons = pead.get("pead_consistency", 0)
+                if cons > 60:
+                    bonus += 8
+                    bonus_notes.append(f"PEAD做多信号（历史{cons:.0f}%延续率，+8）")
+
+            # 质量因子（ROE/毛利率）
+            qual = ea.get("quality_factors", {})
+            if qual.get("ok") and qual.get("quality_grade") == "A":
+                bonus += 5
+                bonus_notes.append("质量因子A级（高ROE+高毛利率，+5）")
+
+            gates["earnings_quality"] = {
+                "pass": cs_score >= 40 or direction == "SHORT",
+                "note": f"CANSLIM评分{cs_score}/100（{grade}）— {ea.get('action', '')}",
+            }
+    except Exception:
+        pass
+
     # ── 宏观过滤（FOMC/CPI/传导链）─────────────────────────
     try:
         from .macro_filter import macro_gate_check

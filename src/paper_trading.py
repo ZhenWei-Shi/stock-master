@@ -266,6 +266,49 @@ def close_position(trade_id: str, exit_price: float,
 
 
 # ─────────────────────────────────────────────────────────────
+# 追踪止损（Trailing Stop）
+# ─────────────────────────────────────────────────────────────
+
+def update_trailing_stop(trade_id: str, current_price: float,
+                          trail_pct: float = 8.0, mode: str = "paper") -> dict:
+    """
+    追踪止损：股价每创新高，止损跟随上移（锁定利润）。
+
+    trail_pct=8% → 止损始终维持在最高价的 92%。
+    止损只升不降——一旦上移就不会因为回调而下移。
+    """
+    path = _LOG if mode == "paper" else _REAL
+    data = _load(path)
+    pos  = data.get("positions", {}).get(trade_id)
+    if not pos or pos.get("status") != "open":
+        return {"ok": False, "error": "仓位不存在或已关闭"}
+
+    highest_seen = pos.get("highest_price", pos["entry_price"])
+    if current_price > highest_seen:
+        highest_seen = current_price
+        pos["highest_price"] = round(highest_seen, 4)
+
+    new_stop = round(highest_seen * (1 - trail_pct / 100), 4)
+    old_stop = pos["stop_loss"]
+
+    if new_stop > old_stop:
+        pos["stop_loss"]     = new_stop
+        pos["trailing_stop"] = True
+        data["positions"][trade_id] = pos
+        _save(data, path)
+        return {
+            "ok":       True,
+            "updated":  True,
+            "old_stop": old_stop,
+            "new_stop": new_stop,
+            "highest":  highest_seen,
+            "note": f"追踪止损上移至${new_stop:.2f}（最高价${highest_seen:.2f}×{100-trail_pct:.0f}%）",
+        }
+    return {"ok": True, "updated": False, "current_stop": old_stop,
+            "note": "止损无需上移"}
+
+
+# ─────────────────────────────────────────────────────────────
 # 盯市（Mark to Market）
 # ─────────────────────────────────────────────────────────────
 
