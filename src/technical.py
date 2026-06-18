@@ -49,7 +49,7 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period=14) -> pd.Seri
         (high - close.shift()).abs(),
         (low - close.shift()).abs(),
     ], axis=1).max(axis=1)
-    return tr.ewm(span=period, adjust=False).mean()
+    return tr.ewm(com=period - 1, adjust=False).mean()  # Wilder平滑：alpha=1/period，与RSI一致
 
 
 def get_indicators(hist: pd.DataFrame) -> dict:

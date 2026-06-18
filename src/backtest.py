@@ -113,7 +113,7 @@ def _atr(high, low, close, period: int = 14) -> float:
         (high - close.shift()).abs(),
         (low  - close.shift()).abs(),
     ], axis=1).max(axis=1)
-    return float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
+    return float(tr.ewm(com=period - 1, adjust=False).mean().iloc[-1])  # Wilder平滑，与RSI一致
 
 
 # ─────────────────────────────────────────────────────────────
@@ -496,7 +496,6 @@ def run_backtest(
     win_rate  = len(wins) / total_trades
     avg_win   = float(np.mean([t["pnl_pct"] for t in wins]))   if wins   else 0
     avg_loss  = float(np.mean([t["pnl_pct"] for t in losses])) if losses else 0
-    rr_ratio  = abs(avg_win / avg_loss)                          if avg_loss != 0 else 0
     total_pnl = sum(t["pnl"] for t in trade_log)
     total_pct = total_pnl / account * 100
 
@@ -507,9 +506,15 @@ def run_backtest(
         if len(spy_s) > 1:
             spy_return = (float(spy_s["Close"].iloc[-1]) / float(spy_s["Close"].iloc[0]) - 1) * 100
 
-    # Kelly Criterion
+    # Kelly Criterion（全胜时 avg_loss=0 → rr_ratio 用99.9占位，与 paper_trading.py 保持一致）
+    if avg_loss != 0:
+        rr_ratio = abs(avg_win / avg_loss)
+    elif avg_win > 0:
+        rr_ratio = 99.9  # 无亏损记录，极高盈亏比占位
+    else:
+        rr_ratio = 0.0
     kelly_f = 0.0
-    if avg_loss != 0 and rr_ratio > 0:
+    if rr_ratio > 0:
         kelly_f = win_rate - (1 - win_rate) / rr_ratio
 
     # 最大回撤（逐笔近似）

@@ -103,8 +103,8 @@ def analyze_eps_acceleration(ticker: str) -> dict:
         if eh is None or eh.empty:
             return {"ok": False, "reason": "无季度财报历史数据"}
 
-        # 按日期降序排列，取最近6季
-        eh = eh.sort_index(ascending=False).head(6)
+        # 按日期降序排列，取最近8季（YoY需i+4，8季可得4个增速、3段加速比较）
+        eh = eh.sort_index(ascending=False).head(8)
 
         quarters = []
         for idx, row in eh.iterrows():

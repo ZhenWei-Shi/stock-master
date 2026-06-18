@@ -56,6 +56,9 @@ RR_RATIO_FALLBACK           = 99.9     # 无亏损记录时的盈亏比占位值
 PRICE_DECIMALS              = 4        # 价格保留小数位
 PNL_DECIMALS                = 2        # P&L 保留小数位
 
+# ── 无风险利率（Sharpe 分子需减去 Rf）────────────────────────
+RF_ANNUAL_PCT               = 4.5      # 美国短期国债年化率（%），每季度手动更新
+
 # ══════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────
@@ -476,10 +479,13 @@ def performance_report(mode: str = "paper") -> dict:
         except Exception:
             trades_per_year = max(total, 1) * 4  # 无法确定时按年化4×估算
         ann_factor = np.sqrt(trades_per_year)
-        sharpe  = float(mean_r / std_r * ann_factor) if std_r > 0 else 0
-        down_r   = pnl_arr[pnl_arr < 0]
-        down_std = float(np.std(down_r, ddof=1)) if len(down_r) > 1 else std_r
-        sortino  = float(mean_r / down_std * ann_factor) if down_std > 0 else 0
+        # Sharpe：超额收益（减去无风险利率）/ 波动率
+        rf_per_trade = RF_ANNUAL_PCT / max(trades_per_year, 1)  # 无风险收益率（每笔，%）
+        sharpe  = float((mean_r - rf_per_trade) / std_r * ann_factor) if std_r > 0 else 0
+        # Sortino：分母 = 下行半偏差（全部N笔的负偏差均方根，非仅亏损笔的std）
+        downside_sq = float(np.mean(np.minimum(pnl_arr, 0) ** 2))
+        down_std = float(np.sqrt(downside_sq)) if downside_sq > 0 else std_r
+        sortino  = float((mean_r - rf_per_trade) / down_std * ann_factor) if down_std > 0 else 0
     else:
         sharpe = sortino = 0.0
 
