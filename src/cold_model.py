@@ -382,6 +382,25 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             bonus += 8
             bonus_notes.append(f"营收加速 {float(rev_growth)*100:.0f}%（+8分）")
 
+    # ── 宏观过滤（FOMC/CPI/传导链）─────────────────────────
+    try:
+        from .macro_filter import macro_gate_check
+        macro = macro_gate_check(ticker)
+        if macro.get("block"):
+            return {
+                "verdict": "ABORT",
+                "reason":  f"宏观否决：{macro['reason']}",
+                "score": 0, "gates": gates, "entry_plan": None,
+            }
+        if macro.get("penalty", 0) > 0:
+            bonus -= macro["penalty"]
+            bonus_notes.append(f"宏观扣分：{macro['reason']}（-{macro['penalty']}）")
+        if macro.get("bonus", 0) > 0:
+            bonus += macro["bonus"]
+            bonus_notes.append(f"宏观加分：{macro['reason']}（+{macro['bonus']}）")
+    except Exception:
+        pass
+
     # ── 机构追踪加分（智能资金共振）────────────────────────
     # 无论标准/激进，有机构信号都加分（上限+20，不影响一票否决逻辑）
     try:

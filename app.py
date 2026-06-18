@@ -49,6 +49,7 @@ from src.backtest import run_backtest as run_historical_backtest, print_report a
 from src.smart_money import (full_smart_money_scan, detect_unusual_options,
                               calculate_gex, detect_short_squeeze,
                               smart_money_flow, institutional_momentum)
+from src.macro_filter import full_macro_report, get_economic_calendar, get_etf_signals
 
 app = Flask(__name__)
 app.json_encoder = _NpEncoder
@@ -1260,6 +1261,42 @@ def api_agent_report():
     try:
         result = daily_report(mode)
         return jsonify({"ok": True, **result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/macro")
+def api_macro():
+    """宏观环境完整报告（经济日历 + 主题 + 传导链 + 板块建议）"""
+    tickers_raw = request.args.get("tickers", "")
+    watchlist   = [t.strip().upper() for t in tickers_raw.split(",") if t.strip()]
+    try:
+        result = full_macro_report(watchlist or None)
+        return app.response_class(
+            response=json.dumps(result, ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/macro/calendar")
+def api_macro_calendar():
+    """经济事件日历（FOMC/CPI/非农）"""
+    try:
+        return jsonify(get_economic_calendar())
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/macro/etf-signals")
+def api_macro_etf():
+    """ETF 实时宏观主题推断"""
+    try:
+        return app.response_class(
+            response=json.dumps(get_etf_signals(), ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 

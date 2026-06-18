@@ -345,11 +345,23 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         """每次扫描前重新读取 watchlist.txt，支持 Telegram 实时更新。"""
         return load_watchlist(",".join(watchlist))
 
+    def _macro_refresh():
+        """每日 09:00 刷新宏观快照，早于 09:45 扫描。"""
+        try:
+            from src.macro_filter import full_macro_report, format_macro_telegram
+            report = full_macro_report(_latest_watchlist())
+            if use_telegram:
+                send_telegram(format_macro_telegram(report))
+            print(f"[Macro] 宏观快照已刷新：{report.get('master_action', '')}")
+        except Exception as e:
+            print(f"[Macro] 宏观刷新失败：{e}")
+
     SCHEDULE = {
+        (9,   0): ("macro_refresh",  _macro_refresh),
         (9,  45): ("morning_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
-        (12, 0):  ("noon_monitor",   lambda: monitor_cycle(mode, use_telegram)),
+        (12,  0): ("noon_monitor",   lambda: monitor_cycle(mode, use_telegram)),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
-        (16, 5):  ("daily_report",   lambda: report_cycle(mode, use_telegram)),
+        (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
     }
 
     executed_today = set()
