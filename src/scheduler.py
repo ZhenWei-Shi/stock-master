@@ -1,0 +1,464 @@
+"""
+自动化调度器（Agent Scheduler）
+
+运行方式：
+  python scheduler.py                  # 前台运行，Ctrl+C 停止
+  python scheduler.py --telegram       # 开启 Telegram 通知
+
+交易日程（美东时间 ET）：
+  09:45  开盘扫描    — 等开盘15分钟稳定后扫描，避免开盘噪音
+  12:00  午间监控    — 检查止损/目标是否触发
+  15:30  收盘前扫描  — 下一交易日候选名单
+  16:00  每日报告    — 生成 P&L 报告，更新 Kelly 参数
+  09:00  周日复盘提醒 — 提示回顾本周交易记录
+
+数据成本：
+  yfinance日线数据 — 免费，适合3-10天摆动交易
+  LLM API        — 当前系统0消耗（全部确定性规则）
+  服务器          — DigitalOcean/AWS t2.micro ≈ $6-8/月
+"""
+
+import time
+import json
+import argparse
+import threading
+from datetime import datetime, timedelta
+import pytz
+import requests
+import os
+import sys
+
+# 把项目根目录加入路径（服务器上用）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.trading_agent import run_scan, run_monitor, daily_report
+from src.paper_trading  import mark_to_market, performance_report
+
+ET = pytz.timezone("America/New_York")
+
+# ── 配置（从环境变量读取，安全不暴露 key）────────────────────
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
+
+DEFAULT_WATCHLIST = [
+    "NVDA", "AMD", "AAPL", "MSFT", "META",
+    "TSLA", "GOOGL", "AMZN", "AVGO", "ORCL",
+    "AXTI", "AAOI", "COHR", "LITE", "VRT", "CEG",
+]
+
+_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "scheduler_config.json")
+
+
+# ─────────────────────────────────────────────────────────────
+# Telegram 通知（免费，无需付费 API）
+# ─────────────────────────────────────────────────────────────
+
+def send_telegram(msg: str) -> bool:
+    """
+    发送 Telegram 消息。
+
+    设置方法（免费）：
+      1. Telegram 搜索 @BotFather，创建 bot，获取 TOKEN
+      2. 给 bot 发任意消息，访问：
+         https://api.telegram.org/bot<TOKEN>/getUpdates
+         找到 chat.id
+      3. 设置环境变量：
+         TELEGRAM_BOT_TOKEN=你的token
+         TELEGRAM_CHAT_ID=你的chat_id
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[Telegram] 未配置（消息：{msg[:50]}...）")
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        resp = requests.post(url, json={
+            "chat_id":    TELEGRAM_CHAT_ID,
+            "text":       msg,
+            "parse_mode": "HTML",
+        }, timeout=10)
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"[Telegram] 发送失败：{e}")
+        return False
+
+
+def notify_go_signal(ticker: str, price: float, score: int,
+                      verdict: str, entry_plan: dict = None):
+    """发送 GO 信号通知。"""
+    msg = (
+        f"🚀 <b>交易信号</b>\n"
+        f"股票：<b>{ticker}</b> @ ${price:.2f}\n"
+        f"评分：{score}/100 | 结论：{verdict}\n"
+    )
+    if entry_plan:
+        msg += (
+            f"入场：${entry_plan.get('entry_price', price):.2f}\n"
+            f"止损：${entry_plan.get('stop_loss', 0):.2f}\n"
+            f"目标：${entry_plan.get('target_1', 0):.2f}\n"
+            f"仓位：{entry_plan.get('shares', 0)}股 "
+            f"(${entry_plan.get('position_usd', 0):.0f})\n"
+            f"模式：{entry_plan.get('trade_type', '摆动')}\n"
+        )
+    msg += f"\n📊 /api/debate-with-cold?ticker={ticker}"
+    send_telegram(msg)
+
+
+def notify_stop_loss(ticker: str, pnl: float):
+    """止损触发通知。"""
+    emoji = "🔴" if pnl < 0 else "🟢"
+    send_telegram(
+        f"{emoji} <b>止损平仓</b>\n"
+        f"股票：{ticker}\n"
+        f"P&L：${pnl:.2f} ({'亏损' if pnl < 0 else '盈利'})\n"
+        f"自动止损已执行"
+    )
+
+
+def notify_daily_report(report: dict):
+    """每日报告通知。"""
+    perf = report.get("performance", {})
+    summ = perf.get("summary", {})
+    risk = perf.get("risk_metrics", {})
+
+    msg = (
+        f"📈 <b>每日报告</b> {report.get('report_date', '')}\n\n"
+        f"账户总值：${summ.get('current_value', 0):,.2f}\n"
+        f"总P&L：${summ.get('total_pnl', 0):+.2f} "
+        f"({summ.get('total_pnl_pct', 0):+.1f}%)\n"
+        f"胜率：{summ.get('win_rate', 0):.0f}% | "
+        f"交易次数：{summ.get('total_trades', 0)}\n"
+        f"Sharpe：{risk.get('sharpe_ratio', 0):.2f} | "
+        f"最大回撤：{risk.get('max_drawdown_pct', 0):.1f}%\n"
+    )
+    if risk.get("circuit_breaker"):
+        msg += "\n🚨 熔断器激活！请复盘后手动解除"
+
+    kelly = perf.get("kelly", {})
+    if kelly.get("half_kelly_usd"):
+        msg += f"\n💡 Kelly建议单仓：${kelly['half_kelly_usd']:.0f}"
+
+    send_telegram(msg)
+
+
+# ─────────────────────────────────────────────────────────────
+# 实时新闻预筛（扫描前运行）
+# ─────────────────────────────────────────────────────────────
+
+def news_prefilter(tickers: list) -> dict:
+    """
+    扫描前对股票做新闻情绪预筛，过滤掉有重大负面新闻的标的。
+
+    数据源：yfinance.news（有几小时延迟，适合摆动策略）
+    如需实时：升级到 Benzinga API ($49/月) 或 Newsfilter ($19/月)
+
+    返回：
+      passed  — 无明显负面新闻，进入技术分析
+      blocked — 重大负面新闻，本次跳过
+      neutral — 无足够数据，按正常流程
+    """
+    import yfinance as yf
+
+    passed  = []
+    blocked = []
+    neutral = []
+
+    # 极度负面词（可能引发股价大跌）
+    HARD_BLOCK_KEYWORDS = [
+        "fraud", "sec investigation", "delisted", "bankruptcy",
+        "doj", "criminal", "restatement", "accounting irregularities",
+        "going concern", "subpoena", "class action",
+    ]
+    # 轻度负面词（仅警告，不封锁）
+    SOFT_WARN_KEYWORDS = [
+        "downgrade", "miss", "disappointing", "guidance cut",
+        "layoff", "recall", "competition", "margin pressure",
+    ]
+
+    for ticker in tickers:
+        try:
+            tk    = yf.Ticker(ticker)
+            news  = tk.news or []
+            if not news:
+                neutral.append(ticker)
+                continue
+
+            # 只看最近 48 小时内的新闻
+            recent = []
+            cutoff = datetime.now(ET).timestamp() - 48 * 3600
+            for n in news[:10]:
+                if n.get("providerPublishTime", 0) >= cutoff:
+                    recent.append(n)
+
+            if not recent:
+                neutral.append(ticker)
+                continue
+
+            # 合并标题文本
+            all_text = " ".join(
+                (n.get("title", "") + " " + n.get("summary", "")).lower()
+                for n in recent
+            )
+
+            hard_hit = [k for k in HARD_BLOCK_KEYWORDS if k in all_text]
+            if hard_hit:
+                blocked.append({
+                    "ticker":  ticker,
+                    "reason":  f"重大负面新闻：{', '.join(hard_hit)}",
+                    "news_count": len(recent),
+                })
+            else:
+                soft_hit = [k for k in SOFT_WARN_KEYWORDS if k in all_text]
+                passed.append({
+                    "ticker":  ticker,
+                    "warning": f"轻度负面词：{', '.join(soft_hit)}" if soft_hit else None,
+                    "news_count": len(recent),
+                })
+
+        except Exception:
+            neutral.append(ticker)
+
+    return {
+        "passed":  [p["ticker"] for p in passed],
+        "blocked": blocked,
+        "neutral": neutral,
+        "warnings": {p["ticker"]: p["warning"] for p in passed if p.get("warning")},
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 完整扫描流程（含新闻预筛 + 通知）
+# ─────────────────────────────────────────────────────────────
+
+def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
+                    use_telegram: bool = True):
+    """
+    完整扫描周期：
+      1. 新闻预筛 → 过滤重大负面新闻股票
+      2. 技术+基本面扫描（cold_decision + debate）
+      3. GO信号自动开模拟仓
+      4. Telegram 推送信号通知
+    """
+    now = datetime.now(ET).strftime("%Y-%m-%d %H:%M ET")
+    print(f"\n{'='*50}")
+    print(f"[Scheduler] 开始完整扫描周期 @ {now}")
+    print(f"[Scheduler] 账户：${account:,.0f} | 模式：{mode}")
+
+    # ── Step 1：新闻预筛 ──────────────────────────────────
+    print(f"\n[1/3] 新闻预筛 {len(watchlist)} 只股票...")
+    news_result = news_prefilter(watchlist)
+    scan_list   = news_result["passed"] + news_result["neutral"]
+    blocked     = news_result["blocked"]
+
+    if blocked:
+        blocked_names = [b["ticker"] for b in blocked]
+        print(f"  ❌ 封锁：{blocked_names}（重大负面新闻）")
+        if use_telegram:
+            send_telegram(
+                f"⚠️ 新闻过滤\n"
+                f"以下股票因负面新闻跳过：{', '.join(blocked_names)}"
+            )
+    print(f"  ✅ 进入分析：{scan_list}")
+
+    # ── Step 2：技术扫描 ─────────────────────────────────
+    print(f"\n[2/3] 技术+基本面扫描 {len(scan_list)} 只...")
+    if not scan_list:
+        print("  所有股票被新闻过滤，本次跳过")
+        return {}
+
+    scan_result = run_scan(
+        watchlist  = scan_list,
+        account_value = account,
+        direction  = "LONG",
+        auto_paper = True,
+        mode       = mode,
+    )
+
+    # ── Step 3：推送 GO 信号 ────────────────────────────
+    go_signals = scan_result.get("go_signals", [])
+    print(f"\n[3/3] 推送通知（{len(go_signals)} 个GO信号）...")
+    if use_telegram:
+        if go_signals:
+            for sig in go_signals:
+                send_telegram(
+                    f"🚀 <b>Agent GO信号</b>\n"
+                    f"<b>{sig['ticker']}</b> @ ${sig.get('price', 0):.2f}\n"
+                    f"冷静评分：{sig.get('score', 0)}\n"
+                    f"辩论结论：{sig.get('debate_conclusion', 'N/A')}\n"
+                    f"看多力度：{sig.get('bull_conviction', 'N/A')} | "
+                    f"风险：{sig.get('bear_severity', 'N/A')}\n"
+                    f"Kelly仓位：${sig.get('kelly_usd', 0):.0f}\n"
+                    f"详情：/api/debate-with-cold?ticker={sig['ticker']}&account={account:.0f}"
+                )
+        else:
+            send_telegram(f"📊 扫描完成，本次无GO信号（已扫{len(scan_list)}只）")
+
+    print(f"\n[Scheduler] 扫描周期完成 ✓\n{'='*50}")
+    return scan_result
+
+
+def monitor_cycle(mode: str = "paper", use_telegram: bool = True):
+    """监控持仓，自动止损，推送警报。"""
+    result  = run_monitor(mode, auto_stop=True)
+    alerts  = result.get("alerts", [])
+    closed  = result.get("auto_closed", [])
+
+    if closed and use_telegram:
+        for c in closed:
+            notify_stop_loss(c["ticker"], c["pnl"])
+
+    if alerts and use_telegram:
+        send_telegram(
+            f"⚡ 持仓警报\n" + "\n".join(f"• {a}" for a in alerts)
+        )
+    return result
+
+
+def report_cycle(mode: str = "paper", use_telegram: bool = True):
+    """每日报告 + 推送。"""
+    report = daily_report(mode)
+    if use_telegram:
+        notify_daily_report(report)
+    return report
+
+
+# ─────────────────────────────────────────────────────────────
+# 调度器主循环（轻量级，无需 APScheduler）
+# ─────────────────────────────────────────────────────────────
+
+def is_market_day() -> bool:
+    """简单判断：周一至周五（不含节假日，节假日影响较小可接受）。"""
+    return datetime.now(ET).weekday() < 5
+
+
+def run_scheduler(watchlist: list, account: float, mode: str = "paper",
+                  use_telegram: bool = True):
+    """
+    主调度循环。每分钟检查是否到了预定时间。
+
+    美东时间计划：
+      09:45 → 开盘扫描
+      12:00 → 午间监控
+      15:30 → 收盘前扫描
+      16:05 → 每日报告
+    """
+    SCHEDULE = {
+        (9,  45): ("morning_scan",   lambda: full_scan_cycle(watchlist, account, mode, use_telegram)),
+        (12, 0):  ("noon_monitor",   lambda: monitor_cycle(mode, use_telegram)),
+        (15, 30): ("closing_scan",   lambda: full_scan_cycle(watchlist, account, mode, use_telegram)),
+        (16, 5):  ("daily_report",   lambda: report_cycle(mode, use_telegram)),
+    }
+
+    executed_today = set()
+
+    if use_telegram:
+        send_telegram(
+            f"🤖 <b>TradingAgent 启动</b>\n"
+            f"账户：${account:,.0f} | 模式：{mode}\n"
+            f"监控股票：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n"
+            f"计划：09:45 / 12:00 / 15:30 / 16:05 ET"
+        )
+
+    print(f"[Scheduler] Agent 启动，按 Ctrl+C 停止")
+    print(f"[Scheduler] Telegram：{'已配置' if TELEGRAM_BOT_TOKEN else '未配置（建议配置）'}")
+    print(f"[Scheduler] 监控 {len(watchlist)} 只股票 @ ${account:,.0f}")
+
+    while True:
+        try:
+            now  = datetime.now(ET)
+            hhmm = (now.hour, now.minute)
+            date_str = now.strftime("%Y-%m-%d")
+
+            if is_market_day():
+                for (h, m), (label, func) in SCHEDULE.items():
+                    key = f"{date_str}_{label}"
+                    if hhmm == (h, m) and key not in executed_today:
+                        executed_today.add(key)
+                        print(f"\n[Scheduler] 执行：{label} @ {now.strftime('%H:%M ET')}")
+                        try:
+                            func()
+                        except Exception as e:
+                            print(f"[Scheduler] {label} 执行出错：{e}")
+                            if use_telegram:
+                                send_telegram(f"❌ Agent错误：{label}\n{str(e)[:200]}")
+
+            # 每天午夜清空已执行记录
+            if hhmm == (0, 1):
+                executed_today.clear()
+
+            time.sleep(55)  # 每55秒检查一次（避免同分钟重复触发）
+
+        except KeyboardInterrupt:
+            print("\n[Scheduler] 已停止")
+            if use_telegram:
+                send_telegram("⛔ TradingAgent 已停止")
+            break
+        except Exception as e:
+            print(f"[Scheduler] 主循环异常：{e}")
+            time.sleep(60)
+
+
+# ─────────────────────────────────────────────────────────────
+# 部署信息（运行时打印）
+# ─────────────────────────────────────────────────────────────
+
+def print_deployment_guide():
+    guide = """
+╔══════════════════════════════════════════════════════════════╗
+║              部署到云服务器（全天候自动运行）                      ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  推荐方案：DigitalOcean Droplet（$6/月，1GB内存）               ║
+║  或：AWS EC2 t2.micro（免费1年）                               ║
+║  或：Render.com（免费tier，每月750小时）                         ║
+║                                                              ║
+║  1. 服务器上安装依赖：                                          ║
+║     pip install -r requirements.txt                           ║
+║                                                              ║
+║  2. 设置环境变量（Telegram通知）：                               ║
+║     export TELEGRAM_BOT_TOKEN="你的token"                     ║
+║     export TELEGRAM_CHAT_ID="你的chat_id"                     ║
+║                                                              ║
+║  3. 后台运行（nohup）：                                         ║
+║     nohup python scheduler.py --telegram &                    ║
+║     tail -f nohup.out  # 查看日志                             ║
+║                                                              ║
+║  4. 或用 systemd 服务（开机自启）：                              ║
+║     见 deploy/trading-agent.service                           ║
+║                                                              ║
+║  每月成本估算：                                                 ║
+║    服务器：$0-8                                                ║
+║    数据：$0（yfinance免费）                                    ║
+║    通知：$0（Telegram免费）                                    ║
+║    LLM：$0（当前系统无LLM调用）                                 ║
+║    ─────────────────────────                                  ║
+║    总计：$0-8/月                                               ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+    print(guide)
+
+
+# ─────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="TradingAgent Scheduler")
+    parser.add_argument("--watchlist", default=",".join(DEFAULT_WATCHLIST))
+    parser.add_argument("--account",   type=float, default=2000)
+    parser.add_argument("--mode",      default="paper", choices=["paper", "real"])
+    parser.add_argument("--telegram",  action="store_true", help="开启 Telegram 通知")
+    parser.add_argument("--test",      action="store_true", help="立即运行一次扫描（测试用）")
+    parser.add_argument("--deploy",    action="store_true", help="打印部署指南")
+    args = parser.parse_args()
+
+    tickers = [t.strip().upper() for t in args.watchlist.split(",") if t.strip()]
+
+    if args.deploy:
+        print_deployment_guide()
+    elif args.test:
+        print("[Test] 立即执行一次完整扫描...")
+        result = full_scan_cycle(tickers, args.account, args.mode, args.telegram)
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    else:
+        run_scheduler(tickers, args.account, args.mode, args.telegram)

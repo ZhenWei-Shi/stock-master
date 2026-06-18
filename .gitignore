@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# 敏感数据（绝不上传）
+.env
+.env.*
+*.env
+config/secrets.py
+config/keys.py
+
+# 交易日志（包含账户数据）
+data/
+logs/
+nohup.out
+
+# API Keys（如果以后加配置文件）
+alpaca_config.json
+broker_config.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb

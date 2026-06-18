@@ -1,0 +1,16 @@
+yfinance>=0.2.40
+pandas>=2.0.0
+numpy>=1.24.0
+flask>=3.0.0
+requests>=2.31.0
+pytrends>=4.9.0
+
+# ── 高星 GitHub 项目集成 ─────────────────────────────────────
+# edgartools ⭐3,000+ (dgunning/edgartools) — SEC EDGAR 13F机构持仓
+edgartools>=2.0.0
+# quantstats ⭐6,500 (ranaroussi/quantstats) — 回测组合分析
+quantstats>=0.0.62
+# pandas-ta ⭐5,299 (twopirllc/pandas-ta) — 200+技术指标
+pandas-ta>=0.3.14b
+# backtesting.py ⭐5,000+ (kernc/backtesting.py) — 回测引擎
+backtesting>=0.3.3
