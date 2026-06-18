@@ -263,6 +263,15 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
     print(f"[Scheduler] 开始完整扫描周期 @ {now}")
     print(f"[Scheduler] 账户：${account:,.0f} | 模式：{mode}")
 
+    # ── 动态 watchlist 扩充（合并用户自选 + 热门板块代表股）────
+    try:
+        from src.trading_agent import build_dynamic_watchlist
+        dyn = build_dynamic_watchlist(core=watchlist, max_total=20)
+        watchlist = dyn["tickers"]
+        print(f"[Scheduler] 动态列表：{dyn['note']}")
+    except Exception as e:
+        print(f"[Scheduler] 动态列表构建失败，使用原列表：{e}")
+
     # ── Step 1：新闻预筛 ──────────────────────────────────
     print(f"\n[1/3] 新闻预筛 {len(watchlist)} 只股票...")
     news_result = news_prefilter(watchlist)
@@ -380,7 +389,8 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         return load_watchlist(",".join(watchlist))
 
     def _macro_refresh():
-        """每日 09:00 刷新宏观快照，早于 09:45 扫描。"""
+        """每日 09:00 晨报：宏观快照 + 板块轮动 + 动态 watchlist 预告。"""
+        # 1. 宏观快照
         try:
             from src.macro_filter import full_macro_report, format_macro_telegram
             report = full_macro_report(_latest_watchlist())
@@ -389,6 +399,37 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             print(f"[Macro] 宏观快照已刷新：{report.get('master_action', '')}")
         except Exception as e:
             print(f"[Macro] 宏观刷新失败：{e}")
+
+        # 2. 板块轮动报告（强制刷新缓存，用最新开盘前数据）
+        try:
+            from src.sector_rotation import fetch_sector_rankings, format_telegram_report
+            fetch_sector_rankings(force=True)
+            if use_telegram:
+                send_telegram(format_telegram_report())
+            print("[Sector] 板块轮动已刷新")
+        except Exception as e:
+            print(f"[Sector] 板块轮动刷新失败：{e}")
+
+        # 3. 动态 watchlist 预告（告知今日扫描哪些股票）
+        try:
+            from src.trading_agent import build_dynamic_watchlist
+            core_wl = _latest_watchlist()
+            dyn = build_dynamic_watchlist(core=core_wl, max_total=20)
+            if use_telegram and dyn.get("sector_add"):
+                sector_info = "\n".join(
+                    f"  [{s['rank']}] {s['name']}（{s['etf']}）热度{s['heat']:+.1f}%"
+                    + ("↑" if s["accel"] else "")
+                    for s in dyn.get("sectors_used", [])
+                )
+                send_telegram(
+                    f"📋 <b>今日扫描列表（{dyn['total']}只）</b>\n\n"
+                    f"核心持续：{', '.join(dyn['core'][:8]) or '无'}\n"
+                    f"板块追加：{', '.join(dyn['sector_add'][:10])}\n\n"
+                    f"🎯 当前热门板块：\n{sector_info}"
+                )
+            print(f"[Sector] 动态 watchlist：{dyn['total']} 只（{dyn.get('note','')}）")
+        except Exception as e:
+            print(f"[Sector] 动态 watchlist 构建失败：{e}")
 
     SCHEDULE = {
         (9,   0): ("macro_refresh",  _macro_refresh),

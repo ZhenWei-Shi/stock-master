@@ -380,6 +380,132 @@ def _interpret_rotation(rankings: list) -> str:
     return msg
 
 
+# ─────────────────────────────────────────────────────────────
+# 板块 → 代表性个股映射
+# 原则：每板块选 6 只高流动性、高 Beta 的摆动交易优先股
+#       防御型板块（XLP/XLRE/XLU）收益相对低，不作为主攻方向
+# ─────────────────────────────────────────────────────────────
+SECTOR_TICKERS = {
+    "XLK":  ["NVDA", "AMD", "AVGO", "MRVL", "ORCL", "MSFT"],
+    "XLF":  ["GS",   "JPM", "V",    "PYPL", "SQ",   "MS"],
+    "XLE":  ["OXY",  "DVN", "EOG",  "MPC",  "XOM",  "VLO"],
+    "XLV":  ["LLY",  "ISRG","DXCM", "UNH",  "HUM",  "REGN"],
+    "XLI":  ["CAT",  "DE",  "GE",   "ROK",  "EMR",  "PWR"],
+    "XLC":  ["META", "NFLX","GOOGL", "DIS",  "TTWO", "EA"],
+    "XLY":  ["TSLA", "BKNG","HD",    "NKE",  "LULU", "UBER"],
+    "XLP":  ["COST", "WMT", "PG",    "KO",   "PEP",  "MDLZ"],  # 防御，热时才看
+    "XLB":  ["FCX",  "NEM", "CF",    "MP",   "ALB",  "LIN"],
+    "XLRE": ["AMT",  "EQIX","PLD",   "WELL", "DLR",  "O"],    # 防御
+    "XLU":  ["CEG",  "NEE", "VST",   "NNE",  "CCJ",  "DUK"],  # 核电驱动时看
+    # 子行业 ETF
+    "SMH":  ["NVDA", "AMD", "AVGO",  "AMAT", "AAOI", "AXTI"],
+    "XBI":  ["MRNA", "REGN","BIIB",  "BMRN", "NTLA", "CRSP"],
+    "ITA":  ["LMT",  "RTX", "NOC",   "RKLB", "KTOS", "BWXT"],
+}
+
+# 纯防御板块：即使热度排名高，也不主动推荐（除非是地缘/危机行情）
+_DEFENSIVE_ETFS = {"XLP", "XLRE"}
+
+
+def get_hot_tickers(top_n_sectors: int = 3,
+                    per_sector: int = 5,
+                    skip_defensive: bool = True) -> list[str]:
+    """
+    返回当前最热板块的代表性个股列表（用于动态 watchlist）。
+
+    逻辑：
+      1. 获取板块排名（带缓存）
+      2. 取前 top_n_sectors 名（默认3个）
+      3. 可选跳过防御性板块（XLP/XLRE）
+      4. 每个板块取 per_sector 只代表股（按 SECTOR_TICKERS 顺序）
+      5. 去重，返回有序列表
+
+    返回 [(ticker, sector_etf, sector_name, rank), ...]
+    """
+    data = fetch_sector_rankings()
+    if data.get("error") or not data.get("rankings"):
+        return []
+
+    rankings = data["rankings"]
+    result   = []
+    seen     = set()
+    selected_sectors = []
+
+    for r in rankings:
+        if len(selected_sectors) >= top_n_sectors:
+            break
+        etf = r["etf"]
+        if skip_defensive and etf in _DEFENSIVE_ETFS:
+            continue
+        selected_sectors.append(r)
+
+    for r in selected_sectors:
+        etf   = r["etf"]
+        tlist = SECTOR_TICKERS.get(etf, [])
+        added = 0
+        for tk in tlist:
+            if tk not in seen and added < per_sector:
+                result.append({
+                    "ticker":       tk,
+                    "sector_etf":   etf,
+                    "sector_name":  r["name"],
+                    "sector_rank":  r["rank"],
+                    "sector_heat":  r["heat"],
+                    "accel":        r["accel"],
+                })
+                seen.add(tk)
+                added += 1
+
+    return result
+
+
+def build_dynamic_watchlist(core: list[str] | None = None,
+                             max_total: int = 20,
+                             top_n_sectors: int = 3,
+                             per_sector: int = 5) -> dict:
+    """
+    合并核心持续关注股 + 当前热板块代表股，构建动态 watchlist。
+
+    core: 用户固定自选股（优先级最高，排在前面）
+    返回：{
+        "tickers":  [完整列表，max 20只],
+        "core":     [用户固定的],
+        "sector_add": [板块轮动动态追加的],
+        "sectors_used": [{etf, name, rank, heat, accel}],
+    }
+    """
+    core = [t.upper() for t in (core or [])]
+    hot  = get_hot_tickers(top_n_sectors=top_n_sectors, per_sector=per_sector)
+
+    sector_add   = []
+    sectors_used = {}
+    for item in hot:
+        tk  = item["ticker"]
+        etf = item["sector_etf"]
+        if tk not in core:
+            sector_add.append(tk)
+        if etf not in sectors_used:
+            sectors_used[etf] = {
+                "etf":  etf,
+                "name": item["sector_name"],
+                "rank": item["sector_rank"],
+                "heat": item["sector_heat"],
+                "accel": item["accel"],
+            }
+
+    combined = core + sector_add
+    combined = list(dict.fromkeys(combined))  # 保序去重
+    combined = combined[:max_total]
+
+    return {
+        "tickers":      combined,
+        "core":         core,
+        "sector_add":   sector_add[:max_total - len(core)],
+        "sectors_used": list(sectors_used.values()),
+        "total":        len(combined),
+    }
+
+
 def format_telegram_report() -> str:
     """生成适合 Telegram 发送的板块轮动报告。"""
     rpt = sector_rotation_report()

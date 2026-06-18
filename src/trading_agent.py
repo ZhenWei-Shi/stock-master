@@ -35,6 +35,40 @@ _DEFAULT_WATCHLIST = [
 ]
 
 
+def build_dynamic_watchlist(core: list | None = None,
+                             max_total: int = 20) -> dict:
+    """
+    构建动态 watchlist：用户固定自选股 + 当前最热板块代表股。
+
+    返回 dict：
+      tickers      — 最终扫描列表（max 20只）
+      core         — 用户固定股
+      sector_add   — 板块轮动动态追加的股
+      sectors_used — 当前使用的热门板块列表
+      note         — 说明字符串
+    """
+    try:
+        from .sector_rotation import build_dynamic_watchlist as _sr_build
+        result = _sr_build(core=core or [], max_total=max_total)
+        sector_names = "、".join(s["name"] for s in result.get("sectors_used", []))
+        result["note"] = (
+            f"核心 {len(result['core'])} 只 + "
+            f"板块轮动 {len(result['sector_add'])} 只（{sector_names}）"
+            f"= 合计 {result['total']} 只"
+        )
+        return result
+    except Exception as e:
+        fallback = (core or []) + _DEFAULT_WATCHLIST
+        fallback = list(dict.fromkeys(fallback))[:max_total]
+        return {
+            "tickers":      fallback,
+            "core":         core or [],
+            "sector_add":   [],
+            "sectors_used": [],
+            "note":         f"板块轮动加载失败（{e}），使用默认列表",
+        }
+
+
 # ─────────────────────────────────────────────────────────────
 # 主扫描函数（核心入口）
 # ─────────────────────────────────────────────────────────────
@@ -71,7 +105,8 @@ def run_scan(watchlist: list, account_value: float = 2000,
     pdt_check = check_pdt_risk(account_value, "margin", pdt_used)
 
     print(f"\n[Agent] 开始扫描 {len(watchlist)} 只股票 @ {scan_time}")
-    print(f"[Agent] 账户：${account_value:,.0f} | PDT状态：{pdt_check['status']}\n")
+    print(f"[Agent] 账户：${account_value:,.0f} | PDT状态：{pdt_check['status']}")
+    print(f"[Agent] 扫描列表：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n")
 
     for i, ticker in enumerate(watchlist[:20]):
         print(f"  [{i+1}/{min(len(watchlist),20)}] 分析 {ticker}...")

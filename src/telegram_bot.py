@@ -242,7 +242,9 @@ def handle_command(text: str):
             "/add NVDA AAPL    添加股票\n"
             "/remove NVDA      删除股票\n"
             "/list             查看自选股\n"
-            "/scan             立即扫描\n"
+            "/scan             立即扫描（含板块轮动扩充）\n"
+            "/sector           板块轮动排名（强制刷新）\n"
+            "/hotlist          查看当日动态扫描列表\n"
             "/status           运行状态\n"
             "/help             显示帮助"
         )
@@ -312,15 +314,47 @@ def handle_command(text: str):
         except Exception as e:
             send(f"扫描启动失败：{e}")
 
+    elif cmd == "/sector":
+        send("⏳ 正在拉取板块轮动数据（强制刷新）...")
+        def _do_sector():
+            try:
+                from src.sector_rotation import fetch_sector_rankings, format_telegram_report
+                fetch_sector_rankings(force=True)
+                send(format_telegram_report())
+            except Exception as e:
+                send(f"板块轮动获取失败：{e}")
+        threading.Thread(target=_do_sector, daemon=True).start()
+
+    elif cmd == "/hotlist":
+        def _do_hotlist():
+            try:
+                from src.trading_agent import build_dynamic_watchlist
+                wl  = read_watchlist()
+                dyn = build_dynamic_watchlist(core=wl, max_total=20)
+                lines = [f"📋 <b>今日动态扫描列表（{dyn['total']}只）</b>\n"]
+                if dyn["core"]:
+                    lines.append(f"📌 <b>固定自选</b>：{', '.join(dyn['core'])}")
+                if dyn["sector_add"]:
+                    lines.append(f"\n⚡ <b>板块轮动追加</b>：{', '.join(dyn['sector_add'])}")
+                for s in dyn.get("sectors_used", []):
+                    accel = "↑加速" if s["accel"] else ""
+                    lines.append(f"  [{s['rank']}] {s['name']}（{s['etf']}）{s['heat']:+.1f}% {accel}")
+                lines.append(f"\n💡 {dyn.get('note','')}")
+                send("\n".join(lines))
+            except Exception as e:
+                send(f"动态列表构建失败：{e}")
+        threading.Thread(target=_do_hotlist, daemon=True).start()
+
     elif cmd == "/status":
         wl = read_watchlist()
         now = datetime.now(ET).strftime("%Y-%m-%d %H:%M ET")
         send(
             f"🤖 <b>Agent 状态</b>\n\n"
             f"时间：{now}\n"
-            f"自选股：{len(wl)} 只\n"
+            f"固定自选：{len(wl)} 只\n"
             f"{'股票：' + ', '.join(wl[:5]) + ('...' if len(wl)>5 else '') if wl else '暂无自选股'}\n\n"
-            f"定时任务：09:45 / 12:00 / 15:30 / 16:05 ET"
+            f"定时任务：09:00 晨报 / 09:45 扫描 / 12:00 监控 / 15:30 扫描 / 16:05 日报\n"
+            f"发 /hotlist 查看今日动态扫描列表"
         )
 
     else:
