@@ -341,10 +341,14 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
       15:30 → 收盘前扫描
       16:05 → 每日报告
     """
+    def _latest_watchlist():
+        """每次扫描前重新读取 watchlist.txt，支持 Telegram 实时更新。"""
+        return load_watchlist(",".join(watchlist))
+
     SCHEDULE = {
-        (9,  45): ("morning_scan",   lambda: full_scan_cycle(watchlist, account, mode, use_telegram)),
+        (9,  45): ("morning_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (12, 0):  ("noon_monitor",   lambda: monitor_cycle(mode, use_telegram)),
-        (15, 30): ("closing_scan",   lambda: full_scan_cycle(watchlist, account, mode, use_telegram)),
+        (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16, 5):  ("daily_report",   lambda: report_cycle(mode, use_telegram)),
     }
 

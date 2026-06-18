@@ -31,7 +31,7 @@ _PATTERN= os.path.join(_DATA, "learned_patterns.json")
 
 os.makedirs(_DATA, exist_ok=True)
 
-MIN_TRADES_FOR_LEARNING = 20  # 最少需要多少笔交易才开始学习
+MIN_TRADES_FOR_LEARNING = 30   # 初步参考；≥50笔才具统计显著性
 
 
 # ─────────────────────────────────────────────────────────────

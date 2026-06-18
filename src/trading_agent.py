@@ -134,13 +134,15 @@ def run_scan(watchlist: list, account_value: float = 2000,
                 continue
             try:
                 result = open_position(
-                    ticker     = sig["ticker"],
-                    shares     = ep.get("shares", 1),
-                    entry_price= ep.get("entry_price", sig["price"]),
-                    stop_loss  = ep.get("stop_loss", sig["price"] * 0.95),
-                    target     = ep.get("target_1", sig["price"] * 1.09),
-                    strategy   = f"Agent/{direction}/AggressiveSwing",
-                    mode       = mode,
+                    ticker      = sig["ticker"],
+                    shares      = ep.get("shares", 1),
+                    entry_price = ep.get("entry_price", sig["price"]),
+                    stop_loss   = ep.get("stop_loss", sig["price"] * 0.95),
+                    target      = ep.get("target_1", sig["price"] * 1.09),
+                    strategy    = f"Agent/{direction}/AggressiveSwing",
+                    mode        = mode,
+                    cold_result = sig.get("cold"),
+                    debate_result = sig.get("debate"),
                 )
                 if result.get("ok"):
                     auto_opened.append({

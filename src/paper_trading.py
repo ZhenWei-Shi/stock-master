@@ -374,19 +374,24 @@ def performance_report(mode: str = "paper") -> dict:
     kelly_f = 0.0
     if avg_loss != 0 and rr_ratio > 0:
         kelly_f = win_rate - (1 - win_rate) / rr_ratio
-    half_kelly = max(0, kelly_f / 2)
-    kelly_usd  = acct.get("current_value", 2000) * half_kelly
+    half_kelly    = max(0, kelly_f / 2)
+    kelly_usd     = acct.get("current_value", 2000) * half_kelly
+    negative_edge = kelly_f < 0  # 期望值为负，不应交易
 
-    # Sharpe Ratio（简化：日收益率 vs 0%无风险）
+    # Sharpe / Sortino（按实际年化交易频率，非错误的√252日化）
     if len(pnl_pcts) >= 5:
-        pnl_arr = np.array(pnl_pcts)
-        mean_r  = np.mean(pnl_arr)
-        std_r   = np.std(pnl_arr)
-        sharpe  = float(mean_r / std_r * np.sqrt(252)) if std_r > 0 else 0
-        # Sortino（只用下行波动）
-        down_r  = pnl_arr[pnl_arr < 0]
-        down_std = float(np.std(down_r)) if len(down_r) > 1 else std_r
-        sortino = float(mean_r / down_std * np.sqrt(252)) if down_std > 0 else 0
+        pnl_arr   = np.array(pnl_pcts)
+        mean_r    = np.mean(pnl_arr)
+        std_r     = np.std(pnl_arr, ddof=1)
+        # 摆动交易年化系数：实际笔数/年（不是252日）
+        trades_per_year = max(total, 1) / max(
+            (datetime.now() - datetime(datetime.now().year, 1, 1)).days / 365, 0.1
+        )
+        ann_factor = np.sqrt(trades_per_year)
+        sharpe  = float(mean_r / std_r * ann_factor) if std_r > 0 else 0
+        down_r   = pnl_arr[pnl_arr < 0]
+        down_std = float(np.std(down_r, ddof=1)) if len(down_r) > 1 else std_r
+        sortino  = float(mean_r / down_std * ann_factor) if down_std > 0 else 0
     else:
         sharpe = sortino = 0.0
 
@@ -429,10 +434,13 @@ def performance_report(mode: str = "paper") -> dict:
             "full_kelly_pct":   round(kelly_f * 100, 1),
             "half_kelly_pct":   round(half_kelly * 100, 1),
             "half_kelly_usd":   round(kelly_usd, 2),
+            "negative_edge": negative_edge,
             "note": (
-                f"基于{total}笔真实交易数据的Kelly建议仓位：${kelly_usd:.0f}（账户{half_kelly*100:.0f}%）"
-                if total >= 10 else
-                f"数据量不足（仅{total}笔），Kelly估算暂用假设60%胜率。需≥10笔才可信"
+                "🚨 策略期望值为负（Kelly<0），当前参数下不应交易，需重新审查入场条件"
+                if negative_edge else
+                f"基于{total}笔数据的Kelly建议：${kelly_usd:.0f}（账户{half_kelly*100:.0f}%）"
+                if total >= 30 else
+                f"样本量{total}笔（建议≥30笔），当前Kelly仅供参考，误差较大"
             ),
         },
         "grades": {
