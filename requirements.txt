@@ -10,7 +10,7 @@ pytrends>=4.9.0
 edgartools>=2.0.0
 # quantstats ⭐6,500 (ranaroussi/quantstats) — 回测组合分析
 quantstats>=0.0.62
-# pandas-ta ⭐5,299 (twopirllc/pandas-ta) — 200+技术指标
-pandas-ta>=0.3.14b
+# ta ⭐9,000+ (bukosabino/ta) — 技术指标库（服务器实装版本）
+ta>=0.10.0
 # backtesting.py ⭐5,000+ (kernc/backtesting.py) — 回测引擎
 backtesting>=0.3.3
