@@ -45,6 +45,7 @@ from src.paper_trading import (init_account, open_position, close_position,
                                 reset_circuit_breaker)
 from src.trading_agent import run_scan, run_monitor, daily_report
 from src.market import detect_follow_through_day
+from src.backtest import run_backtest as run_historical_backtest, print_report as bt_print_report
 
 app = Flask(__name__)
 app.json_encoder = _NpEncoder
@@ -1258,6 +1259,38 @@ def api_agent_report():
         return jsonify({"ok": True, **result})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/backtest/historical", methods=["GET", "POST"])
+def api_backtest_historical():
+    """
+    历史回测（多标的逐日切片，零未来数据泄露）
+    参数：tickers, start, end, account, risk, rr, verbose
+    示例：GET /api/backtest/historical?tickers=NVDA,AMD&start=2023-01-01&end=2024-12-31&account=2000
+    """
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+    else:
+        d = request.args
+
+    tickers_raw = d.get("tickers", "NVDA,AMD,TSLA")
+    tickers = [t.strip().upper() for t in tickers_raw.split(",") if t.strip()]
+    try:
+        result = run_historical_backtest(
+            tickers    = tickers,
+            start_date = d.get("start", "2023-01-01"),
+            end_date   = d.get("end",   "2024-12-31"),
+            account    = float(d.get("account", 2000)),
+            risk_pct   = float(d.get("risk", 3.0)),
+            target_rr  = float(d.get("rr", 2.0)),
+            verbose    = str(d.get("verbose", "false")).lower() == "true",
+        )
+        return app.response_class(
+            response=json.dumps(result, ensure_ascii=False, cls=_NpEncoder),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
 
 @app.route("/api/market/ftd")
