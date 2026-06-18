@@ -33,6 +33,95 @@ from .pdt_guard import check_pdt_risk, will_trigger_pdt
 
 ET = pytz.timezone("America/New_York")
 
+# ══════════════════════════════════════════════════════════════
+# 全局配置常量（修改参数在此处，无需深入函数体）
+# ══════════════════════════════════════════════════════════════
+
+# ── 账户规模门限 ──────────────────────────────────────────────
+PORTFOLIO_FORCE_AGGRESSIVE  = 5_000    # ≤$5k 自动激活激进模式
+PORTFOLIO_SMALL_THRESHOLD   = 10_000   # <$10k 使用小账户风险比例
+PDT_ACCOUNT_MINIMUM         = 25_000   # 联邦PDT最低保证金
+
+# ── 市场时间窗口（美东时间分钟数）────────────────────────────
+MARKET_OPEN_MIN             = 570      # 09:30
+MARKET_CLOSE_MIN            = 960      # 16:00
+OPEN_BUFFER_STD             = 15       # 标准模式：开盘后15分钟禁入
+CLOSE_BUFFER_STD            = 20       # 标准模式：收盘前20分钟禁入
+OPEN_BUFFER_AGG             = 5        # 激进/摆动：5分钟
+CLOSE_BUFFER_AGG            = 5        # 激进/摆动：5分钟
+
+# ── VIX 恐慌指数阈值 ─────────────────────────────────────────
+VIX_PANIC_HARD              = 40.0     # 硬性禁入
+VIX_ELEVATED                = 28.0     # 预警（减半仓位）
+VIX_DEFAULT_FALLBACK        = 20.0     # 获取失败时的默认值
+
+# ── 移动均线周期 ─────────────────────────────────────────────
+MA_SHORT                    = 20
+MA_MID                      = 50
+MA_LONG                     = 200
+
+# ── RSI 配置 ─────────────────────────────────────────────────
+RSI_PERIOD                  = 14
+RSI_STD_MIN, RSI_STD_MAX    = 40, 70   # 标准模式
+RSI_AGG_MIN, RSI_AGG_MAX    = 35, 80   # 激进模式
+
+# ── ATR 止损空间 ─────────────────────────────────────────────
+ATR_PERIOD                  = 14
+ATR_STOP_MULT               = 1.5      # ATR × 1.5 = 止损距离
+MAX_STOP_PCT_STD            = 8.0      # 标准模式最大止损%
+MAX_STOP_PCT_AGG            = 12.0     # 激进模式最大止损%
+MIN_STOP_PCT                = 0.3      # 最小止损%（防信号失真）
+
+# ── 量能配置 ─────────────────────────────────────────────────
+VOL_MA_PERIOD               = 20
+VOL_RATIO_MIN               = 0.8      # 最低量比门槛
+PRICE_DROP_WARN_PCT         = -2.0     # 价格跌幅触发放量预警
+SELLOFF_VOL_RATIO           = 2.0      # 高量比+下跌 = 抛售
+
+# ── VWAP 配置 ─────────────────────────────────────────────────
+VWAP_MIN_BARS               = 5        # 日内最少K线数
+VWAP_LONG_PREMIUM_MAX       = 5.0      # 多头：最大溢价VWAP%
+VWAP_LONG_DISCOUNT_MIN      = -3.0     # 多头：最大折价VWAP%
+
+# ── 入场评分门限 ─────────────────────────────────────────────
+GO_THRESHOLD_STD            = 75       # 标准模式入场分
+GO_THRESHOLD_AGG            = 65       # 激进模式入场分
+WAIT_THRESHOLD_STD          = 55       # 标准模式等待分
+WAIT_THRESHOLD_AGG          = 45       # 激进模式等待分
+
+# ── 仓位风险比例 ─────────────────────────────────────────────
+RISK_PCT_AGG                = 0.03     # 激进模式：账户3%
+RISK_PCT_SMALL              = 0.015    # 小账户：1.5%
+RISK_PCT_STD                = 0.01     # 标准模式：1%
+MAX_POS_PCT_AGG             = 0.50     # 激进单仓上限：50%
+MAX_POS_PCT_STD             = 0.25     # 标准单仓上限：25%
+
+# ── 出场倍率 ─────────────────────────────────────────────────
+TARGET_1_ATR_MULT           = 2.0      # 目标1：ATR×2
+TARGET_2_ATR_MULT           = 3.5      # 目标2：ATR×3.5
+
+# ── 期望值估算（激进模式） ───────────────────────────────────
+EV_WIN_RATE                 = 0.60     # 假设胜率
+EV_RR_RATIO                 = 3.0      # 假设盈亏比
+
+# ── 加分/扣分配置 ────────────────────────────────────────────
+CANSLIM_A_BONUS             = 15       # CANSLIM A级加分
+CANSLIM_B_BONUS             = 8        # CANSLIM B级加分
+CANSLIM_D_PENALTY           = 12       # CANSLIM D级扣分
+PEAD_BONUS                  = 8        # PEAD漂移信号加分
+QUALITY_A_BONUS             = 5        # 质量因子A加分
+UOA_BULL_BONUS              = 10       # 看涨期权异常加分
+UOA_BEAR_PENALTY            = 8        # 看跌期权异常扣分
+SMF_BULL_BONUS              = 10       # 机构资金流入加分
+SMF_BEAR_PENALTY            = 8        # 机构资金流出扣分
+SQUEEZE_BONUS               = 5        # 逼空信号加分
+SQUEEZE_SCORE_MIN           = 60       # 触发加分的最低逼空分
+
+# ── 回测/扫描限制 ─────────────────────────────────────────────
+SCAN_TICKER_LIMIT           = 20       # 单次批量扫描最多20只
+
+# ══════════════════════════════════════════════════════════════
+
 # ─────────────────────────────────────────────────────────────
 # 主入口
 # ─────────────────────────────────────────────────────────────
@@ -68,7 +157,13 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
       gates, entry_plan, pdt_status, expected_value
     """
     # 账户 < $5k 自动激活激进模式
-    if portfolio <= 5_000:
+    if portfolio <= 0:
+        return {"verdict": "ABORT", "reason": "账户净值无效（≤0）",
+                "score": 0, "gates": {}, "entry_plan": None}
+    if not ticker or not isinstance(ticker, str):
+        return {"verdict": "ABORT", "reason": "代码无效",
+                "score": 0, "gates": {}, "entry_plan": None}
+    if portfolio <= PORTFOLIO_FORCE_AGGRESSIVE:
         aggressive_mode = True
     now = datetime.now(ET)
     gates = {}

@@ -33,6 +33,41 @@ import yfinance as yf
 _DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 os.makedirs(_DATA, exist_ok=True)
 
+# ══════════════════════════════════════════════════════════════
+# 回测配置常量（修改参数在此处；过拟合风险：避免对单一时间段调参）
+# ══════════════════════════════════════════════════════════════
+
+# ── 技术指标参数 ──────────────────────────────────────────────
+RSI_PERIOD                  = 14
+RSI_AGG_MIN, RSI_AGG_MAX    = 35, 80
+MACD_FAST, MACD_SLOW        = 12, 26
+MACD_SIGNAL                 = 9
+ATR_PERIOD                  = 14
+ATR_STOP_MULT               = 2.0      # 回测用ATR×2（含更多余量）
+MA_SHORT, MA_MID             = 20, 50
+
+# ── 入场门限 ─────────────────────────────────────────────────
+VIX_PANIC_HARD              = 40.0     # VIX>40：禁入
+SPY_MA50_MIN_RATIO          = 0.97     # SPY至少在MA50的97%以上
+VOL_RATIO_MIN               = 1.2      # 量比≥1.2倍均量
+NEAR_HIGH_52W_MAX_DROP      = 0.20     # 距52周高点≤20%
+MAX_STOP_PCT                = 12.0     # 最大ATR止损%
+MIN_STOP_PCT                = 0.3      # 最小ATR止损%
+
+# ── 仓位管理 ─────────────────────────────────────────────────
+DEFAULT_MAX_POSITIONS       = 3        # 最多同时持N个仓位
+DEFAULT_ACCOUNT             = 2_000.0  # 默认回测资金
+DEFAULT_RISK_PCT            = 3.0      # 每笔风险% (3% of account)
+DEFAULT_MAX_HOLD_DAYS       = 15       # 最长持仓天数
+DEFAULT_SLIPPAGE_PCT        = 0.1      # 滑点%
+DEFAULT_TARGET_RR           = 2.0      # 目标盈亏比
+MAX_POSITION_PCT            = 0.50     # 单仓最大比例
+
+# ── 数据预热 ─────────────────────────────────────────────────
+DATA_WARMUP_DAYS            = 90       # 指标预热天数（MA50需要50天）
+MIN_TRADING_DAYS            = 20       # 回测至少需要N个交易日
+
+# ══════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────
 # 技术指标（逐日切片安全版）
@@ -206,6 +241,13 @@ def run_backtest(
 
     返回：
       完整绩效报告 + 逐笔交易记录
+
+    ⚠️ 过拟合警告：
+      回测参数（RSI范围、止损%、量比门限）均基于近期市场。
+      单一时间段结果不代表未来表现。建议：
+        1. 用多段时间窗口验证（Walk-Forward）
+        2. 避免用回测结果反推参数（曲线拟合）
+        3. 用 Out-of-Sample 数据做最终验证
     """
     print(f"[回测] 下载历史数据... 标的：{tickers} + SPY + VIX")
     print(f"[回测] 周期：{start_date} → {end_date}")
@@ -372,6 +414,8 @@ def run_backtest(
             stop_pct   = sig["stop_loss_pct"] / 100
             risk_dollar = total_value * (risk_pct / 100)
             stop_dist  = entry_price * stop_pct
+            if stop_dist <= 0:
+                continue  # 止损距离无效，跳过此信号
             shares     = max(1, int(risk_dollar / stop_dist))
             cost       = shares * entry_price
             max_pos_val = total_value * 0.50  # 单仓不超过账户 50%

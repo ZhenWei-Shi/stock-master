@@ -40,6 +40,46 @@ _SP500_UNIVERSE = [
 # 缓存（进程内有效，避免重复下载）
 _rs_cache: dict = {}
 
+# ══════════════════════════════════════════════════════════════
+# 选股配置常量（修改参数在此处）
+# ══════════════════════════════════════════════════════════════
+
+# ── O'Neil RS 评分权重（4段加权，近期权重最高）─────────────
+ONEIL_WEIGHT_3MO            = 0.40     # 3个月收益权重（最近=最重要）
+ONEIL_WEIGHT_6MO            = 0.20
+ONEIL_WEIGHT_9MO            = 0.20
+ONEIL_WEIGHT_12MO           = 0.20
+ONEIL_3MO_DAYS              = 63       # 约3个月交易日数
+ONEIL_6MO_DAYS              = 126
+ONEIL_9MO_DAYS              = 189
+ONEIL_12MO_DAYS             = 252
+
+# ── RS 评级门限 ────────────────────────────────────────────
+RS_PASS_THRESHOLD           = 85       # ≥85 = 强势
+RS_WARN_THRESHOLD           = 70       # 70-84 = 勉强
+RS_FAIL_THRESHOLD           = 70       # <70 = 弱势
+
+# ── 流动性门限 ────────────────────────────────────────────
+LIQUIDITY_VOL_MIN_SMALL     = 500_000  # 小账户：日均量≥50万
+LIQUIDITY_VOL_MIN_LARGE     = 100_000  # 大账户：日均量≥10万
+LIQUIDITY_VOL_EXCELLENT     = 2_000_000 # 流动性极佳：>200万
+
+# ── 九关门限 ─────────────────────────────────────────────
+GATE_INST_PASS              = 0.40     # 机构持仓≥40%
+GATE_INST_WARN              = 0.15     # 机构持仓≥15%
+GATE_REV_PASS               = 0.25     # 营收增速≥25%（O'Neil A标准）
+GATE_REV_WARN               = 0.10     # 营收增速≥10%
+GATE_DIST_DAYS_WARN         = 4        # ≥4个分发日 = 警告
+GATE_RS_PASS                = 85       # RS≥85 = 强势
+GATE_RS_WARN                = 70       # RS≥70 = 勉强
+GATE_GAMMA_PASS             = 6        # Gamma挤压得分≥6
+GATE_GAMMA_WARN             = 3        # Gamma挤压得分≥3
+
+# ── 价格/ATR 最小值（防止计算无效信号）──────────────────────
+MIN_CLOSE_PRICE             = 0.01     # 防止除以极小价格
+
+# ══════════════════════════════════════════════════════════════
+
 
 def _oneil_score(hist) -> float:
     """O'Neil 加权收益分：0.4×3mo + 0.2×6mo + 0.2×9mo + 0.2×12mo"""

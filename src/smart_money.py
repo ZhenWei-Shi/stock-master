@@ -35,6 +35,62 @@ import pytz
 
 ET = pytz.timezone("America/New_York")
 
+# ══════════════════════════════════════════════════════════════
+# 机构追踪配置常量（修改参数在此处）
+# ══════════════════════════════════════════════════════════════
+
+# ── UOA（异常期权活动）─────────────────────────────────────────
+UOA_EXTREME_RATIO           = 3.0      # Vol/OI ≥3 = 极强信号
+UOA_EXTREME_VOL             = 500      # 极强需配合量≥500
+UOA_NORMAL_RATIO            = 2.0      # Vol/OI ≥2 = 普通异常
+UOA_NORMAL_VOL              = 200      # 普通异常需配合量≥200
+UOA_MIN_VOLUME              = 100      # 低于此量不计入
+OTM_CALL_BUFFER             = 1.01     # OTM call = strike > price*1.01
+OTM_PUT_BUFFER              = 0.99     # OTM put  = strike < price*0.99
+MAX_EXPIRATIONS             = 3        # 只看最近N个到期日
+
+# ── GEX（做市商Gamma敞口）────────────────────────────────────
+GEX_OI_MIN                  = 10       # 最低未平仓量才计入GEX
+GEX_T_MIN                   = 0.01     # 最小到期时间（年），防Gamma极值
+GEX_BS_RATE                 = 0.05     # Black-Scholes无风险利率
+HV_DEFAULT                  = 0.30     # 历史波动率默认值
+HV_MIN_DAYS                 = 10       # 计算历史波动率最少需要N天
+
+# ── 空头挤压 ─────────────────────────────────────────────────
+SQUEEZE_EXTREME_FLOAT       = 0.30     # 空头>30% = GME级别
+SQUEEZE_HIGH_FLOAT          = 0.20     # 空头>20%
+SQUEEZE_MED_FLOAT           = 0.10     # 空头>10%
+SQUEEZE_DTC_HIGH            = 5        # Days-to-cover >5
+SQUEEZE_DTC_MED             = 3        # Days-to-cover >3
+SQUEEZE_MOM_STRONG          = 0.10     # 10日涨幅>10%
+SQUEEZE_MOM_MOD             = 0.05     # 10日涨幅>5%
+SQUEEZE_VOL_SPIKE           = 3.0      # 量比>3倍
+SQUEEZE_VOL_ELEVATED        = 2.0      # 量比>2倍
+SQUEEZE_SCORE_MIN           = 0
+SQUEEZE_SCORE_MAX           = 100
+SQUEEZE_THRESHOLD_HIGH      = 70       # ≥70 = 极高挤压风险
+SQUEEZE_THRESHOLD_MED       = 40       # ≥40 = 中等
+
+# ── SMF（智能资金流向）────────────────────────────────────────
+SMF_OPEN_BARS               = 6        # 开盘30分钟 = 6根5分钟K线
+SMF_CLOSE_BARS              = 12       # 收盘60分钟 = 12根5分钟K线
+SMF_MIN_BARS                = 15       # 计算SMF最少需要N根K线
+SMF_MOVE_THRESHOLD          = 0.3      # ±0.3%以上视为有效信号
+
+# ── 13F机构持仓 ────────────────────────────────────────────
+INST_HIGH_HELD              = 0.70     # ≥70% = 高机构化
+INST_MED_HELD               = 0.50     # ≥50%
+INST_LOW_HELD               = 0.15     # ≥15% = 有机构参与
+INSIDER_SKIN_THRESHOLD      = 0.05     # 内部人持股>5% = 利益绑定
+
+# ── 综合评分 ─────────────────────────────────────────────────
+SMART_SCORE_MIN             = 0
+SMART_SCORE_MAX             = 100
+SMART_THRESHOLD_EXTREME     = 80
+SMART_THRESHOLD_GOOD        = 60
+SMART_THRESHOLD_MODERATE    = 40
+
+# ══════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────
 # 1. 异常期权活动（Unusual Options Activity）
@@ -485,11 +541,11 @@ def smart_money_flow(ticker: str) -> dict:
         today_close = float(close_all.iloc[-1])
 
         # 开盘段变化（情绪化噪音）
-        open_move  = (open_vwap - prev_close) / prev_close * 100
+        open_move  = (open_vwap - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
         # 收盘段变化（机构动作）
-        close_move = (close_vwap - open_vwap) / open_vwap * 100
+        close_move = (close_vwap - open_vwap) / open_vwap * 100 if open_vwap > 0 else 0.0
         # 全天净变化
-        day_return = (today_close - prev_close) / prev_close * 100
+        day_return = (today_close - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
 
         # SMF 信号判断
         if close_move > 0.3 and open_move < 0:

@@ -30,6 +30,33 @@ _REAL   = os.path.join(_DATA, "real_trades.json")
 
 os.makedirs(_DATA, exist_ok=True)
 
+# ══════════════════════════════════════════════════════════════
+# 全局配置常量（修改参数在此处）
+# ══════════════════════════════════════════════════════════════
+
+# ── 滑点配置 ─────────────────────────────────────────────────
+DEFAULT_SLIPPAGE_PCT        = 0.05     # 默认滑点（市价单，大盘股）
+MAX_SLIPPAGE_PCT            = 1.0      # 最大允许滑点（拦截异常输入）
+
+# ── 熔断器 ───────────────────────────────────────────────────
+CB_LOSS_TRIGGER             = 5        # 连续亏损N笔触发熔断
+CB_DRAWDOWN_TRIGGER         = -10.0    # 回撤超过10%触发熔断（负数）
+
+# ── 追踪止损 ─────────────────────────────────────────────────
+TRAIL_STOP_DEFAULT          = 8.0      # 默认追踪止损%
+TRAIL_STOP_MIN              = 0.1      # 最小追踪止损%（防误操作）
+TRAIL_STOP_MAX              = 50.0     # 最大追踪止损%（防误操作）
+
+# ── 统计门限 ─────────────────────────────────────────────────
+SHARPE_MIN_TRADES           = 5        # Sharpe 最少需要N笔数据
+KELLY_WARN_TRADES           = 30       # Kelly 建议≥30笔样本
+RR_RATIO_FALLBACK           = 99.9     # 无亏损记录时的盈亏比占位值
+
+# ── 精度 ─────────────────────────────────────────────────────
+PRICE_DECIMALS              = 4        # 价格保留小数位
+PNL_DECIMALS                = 2        # P&L 保留小数位
+
+# ══════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────
 # 交易日志 I/O
@@ -94,13 +121,19 @@ def open_position(ticker: str, shares: int, entry_price: float,
       - 滑点（slippage）：市价单平均滑点 0.05%（大盘股）至 0.3%（小盘股）
       - 买卖价差：已含在 slippage_pct 中
     """
+    if entry_price <= 0 or not np.isfinite(entry_price):
+        return {"ok": False, "error": f"入场价无效：{entry_price}"}
+    if shares <= 0 or not isinstance(shares, (int, float)):
+        return {"ok": False, "error": f"手数无效：{shares}"}
+    slippage_pct = max(0.0, min(MAX_SLIPPAGE_PCT, slippage_pct))
+
     path = _LOG if mode == "paper" else _REAL
     data = _load(path)
     acct = data.get("account", {})
 
     if acct.get("circuit_breaker", {}).get("active"):
         return {"ok": False, "error": "熔断器激活！当前禁止开新仓位",
-                "reason": "连续5笔亏损或回撤超过10%，需冷静期1周"}
+                "reason": f"连续{CB_LOSS_TRIGGER}笔亏损或回撤超过{abs(CB_DRAWDOWN_TRIGGER)}%，需冷静期1周"}
 
     # 真实成交价（含滑点）
     exec_price   = entry_price * (1 + slippage_pct / 100)
@@ -223,7 +256,8 @@ def close_position(trade_id: str, exit_price: float,
     acct["current_value"] = round(acct["cash"] + total_open, 4)
     acct["peak_value"]    = max(acct.get("peak_value", acct["current_value"]),
                                 acct["current_value"])
-    dd_pct = (acct["current_value"] - acct["peak_value"]) / acct["peak_value"] * 100
+    peak = acct["peak_value"]
+    dd_pct = (acct["current_value"] - peak) / peak * 100 if peak > 0 else 0.0
     cb["max_drawdown_pct"] = round(min(cb.get("max_drawdown_pct", 0), dd_pct), 2)
     if dd_pct < -10:
         cb["active"] = True
@@ -277,6 +311,7 @@ def update_trailing_stop(trade_id: str, current_price: float,
     trail_pct=8% → 止损始终维持在最高价的 92%。
     止损只升不降——一旦上移就不会因为回调而下移。
     """
+    trail_pct = max(TRAIL_STOP_MIN, min(TRAIL_STOP_MAX, trail_pct))
     path = _LOG if mode == "paper" else _REAL
     data = _load(path)
     pos  = data.get("positions", {}).get(trade_id)

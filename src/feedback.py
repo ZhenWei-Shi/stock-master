@@ -31,7 +31,21 @@ _PATTERN= os.path.join(_DATA, "learned_patterns.json")
 
 os.makedirs(_DATA, exist_ok=True)
 
-MIN_TRADES_FOR_LEARNING = 30   # 初步参考；≥50笔才具统计显著性
+# ══════════════════════════════════════════════════════════════
+# 学习系统配置常量（过拟合风险：样本量不足时降低置信，不自动修改策略）
+# ══════════════════════════════════════════════════════════════
+MIN_TRADES_FOR_LEARNING     = 30       # 初步参考；≥50笔才具统计显著性
+MIN_TRADES_SIGNIFICANT      = 50       # 95%置信度最低样本量
+DANGER_LOSS_RATE            = 0.65     # 门关失效时 >65% 亏损 = 危险
+DANGER_GATE_MIN_SAMPLES     = 3        # 最少N次门关失效才分析
+VIX_DANGER_THRESHOLD        = 25       # VIX >25 视为高恐慌
+VIX_DANGER_LOSS_RATE        = 0.50     # 高VIX期 >50% 亏损 = 危险
+MARKET_STATE_DANGER_RATE    = 0.60     # 市场状态 >60% 亏损 = 危险
+MARKET_STATE_MIN_SAMPLES    = 3        # 最少N笔才分析市场状态
+ANTI_PATTERN_BLOCK_WARNINGS = 3        # 触发N条危险预警时建议否决
+ANTI_PATTERN_BLOCK_PENALTY  = 30       # 扣分达N分时建议否决
+GATE_DANGER_PENALTY         = 12       # 每条危险门关扣分
+# ══════════════════════════════════════════════════════════════
 
 
 # ─────────────────────────────────────────────────────────────
@@ -178,8 +192,11 @@ def analyze_patterns() -> dict:
         "state_stats":         state_stats,
         "ready":               True,
     }
-    with open(_PATTERN, "w", encoding="utf-8") as f:
-        json.dump(patterns, f, ensure_ascii=False, indent=2)
+    try:
+        with open(_PATTERN, "w", encoding="utf-8") as f:
+            json.dump(patterns, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # 写失败不影响调用方；下次还会重新计算
 
     return patterns
 
@@ -201,8 +218,11 @@ def check_anti_patterns(cold_result: dict) -> dict:
     if not os.path.exists(_PATTERN):
         return {"warnings": [], "penalty": 0, "block": False}
 
-    with open(_PATTERN, "r", encoding="utf-8") as f:
-        patterns = json.load(f)
+    try:
+        with open(_PATTERN, "r", encoding="utf-8") as f:
+            patterns = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"warnings": [], "penalty": 0, "block": False}
 
     if not patterns.get("ready"):
         return {"warnings": [], "penalty": 0, "block": False}

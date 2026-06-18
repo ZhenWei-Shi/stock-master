@@ -38,6 +38,44 @@ ET = pytz.timezone("America/New_York")
 _DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 os.makedirs(_DATA, exist_ok=True)
 
+# ══════════════════════════════════════════════════════════════
+# 宏观过滤配置常量（修改参数在此处）
+# ══════════════════════════════════════════════════════════════
+
+# ── 经济事件禁入窗口 ─────────────────────────────────────────
+FOMC_BLOCK_DAYS             = 1        # FOMC决议日当天±1天禁入
+CPI_BLOCK_DAYS              = 1        # CPI发布日当天禁入
+NFP_BLOCK_DAYS              = 1        # 非农发布日当天禁入
+
+# ── ETF宏观信号阈值 ──────────────────────────────────────────
+VIX_SURGE_PCT               = 15.0     # VIX单日涨>15% = 地缘风险
+VIX_CAUTION_PCT             = 8.0      # VIX单日涨>8%  = 警戒
+OIL_SPIKE_PCT               = 3.0      # 原油涨>3%  = 能源冲击
+OIL_CRASH_PCT               = -3.0     # 原油跌>3%  = 需求崩塌
+GOLD_SAFE_HAVEN_PCT         = 1.5      # 黄金涨>1.5% = 避险
+BOND_DOVISH_PCT             = 1.0      # TLT涨>1%  = 降息预期
+DEFENSE_SPIKE_PCT           = 2.0      # 国防股涨>2% = 地缘
+TECH_BOOM_PCT               = 2.0      # 科技涨>2%  = AI繁荣信号
+
+# ── 宏观快照有效期 ────────────────────────────────────────────
+SNAPSHOT_MAX_AGE_HOURS      = 2        # >2小时的快照提示刷新
+
+# ── 宏观门关惩罚/加分 ────────────────────────────────────────
+MACRO_PENALTY_AVOID         = 25       # 受害板块扣分
+MACRO_BONUS_FAVOR           = 15       # 受益板块加分
+MACRO_PENALTY_VIX_HIGH      = 20       # VIX剧烈波动扣分
+MACRO_PENALTY_VIX_MILD      = 10       # VIX温和波动扣分
+MACRO_PENALTY_CAP           = 35       # 总扣分上限
+MACRO_BONUS_CAP             = 20       # 总加分上限
+
+# ── 负面新闻硬性关键词 ──────────────────────────────────────
+HARD_NEGATIVE_KEYWORDS = [
+    "fraud", "sec investigation", "bankruptcy", "scandal",
+    "accounting restatement", "criminal charges", "ceo arrested",
+    "delisting", "going concern", "chapter 11",
+]
+
+# ══════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────
 # 1. 经济日历（FOMC / CPI / 非农 / 财季）
@@ -446,11 +484,7 @@ def get_etf_signals() -> dict:
 # 4. 新闻关键词分类（从 yfinance 获取）
 # ─────────────────────────────────────────────────────────────
 
-_HARD_NEGATIVE = [
-    "fraud", "sec investigation", "bankruptcy", "scandal", "restatement",
-    "accounting fraud", "criminal charges", "ceo arrested", "delisting",
-    "going concern", "chapter 11", "chapter 7", "fda rejection",
-]
+_HARD_NEGATIVE = HARD_NEGATIVE_KEYWORDS  # 统一使用顶部配置常量
 
 
 def get_news_themes(tickers: list = None) -> dict:
