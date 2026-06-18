@@ -475,6 +475,11 @@ if __name__ == "__main__":
 
     tickers = load_watchlist(args.watchlist)
 
+    # 启动 Telegram 指令监听
+    if args.telegram:
+        from src.telegram_bot import start_bot_thread
+        start_bot_thread()
+
     if args.deploy:
         print_deployment_guide()
     elif args.test:
