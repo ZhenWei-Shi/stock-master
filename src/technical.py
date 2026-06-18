@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 
 try:
-    import pandas_ta as ta
+    import ta as _ta
     TA_OK = True
 except ImportError:
     TA_OK = False
