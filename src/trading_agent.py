@@ -106,6 +106,13 @@ def run_scan(watchlist: list, account_value: float = 2000,
                     row["kelly_usd"]         = debate.get("risk_officer", {}).get(
                         "kelly_criterion", {}).get("half_kelly_usd")
 
+                    # 保存入场区间到 row，供 Telegram 通知使用
+                    ep = cold.get("entry_plan", {})
+                    row["entry_price"] = ep.get("entry_price")
+                    row["stop_loss"]   = ep.get("stop_loss")
+                    row["target_1"]    = ep.get("target_1")
+                    row["shares"]      = ep.get("shares")
+
                     debate_result = debate.get("verdict", {}).get("conclusion", "WAIT")
                     if debate_result in ("GO", "CONDITIONAL"):
                         go_signals.append({**row, "cold": cold, "debate": debate})
@@ -240,20 +247,23 @@ def run_monitor(mode: str = "paper", auto_stop: bool = True) -> dict:
 
 def daily_report(mode: str = "paper") -> dict:
     """生成当日交易总结报告。"""
-    from .paper_trading import performance_report, list_positions, compare_paper_vs_real
+    from .paper_trading import performance_report, list_positions, compare_paper_vs_real, mark_to_market
 
     perf = performance_report(mode)
     pos  = list_positions(mode)
     comp = compare_paper_vs_real()
+    mtm  = mark_to_market(mode)
 
+    today = datetime.now(ET).strftime("%Y-%m-%d")
     return {
-        "report_date":   datetime.now(ET).strftime("%Y-%m-%d"),
-        "mode":          mode,
-        "performance":   perf,
-        "open_positions": len(pos.get("open", [])),
+        "report_date":          today,
+        "mode":                 mode,
+        "performance":          perf,
+        "open_positions":       len(pos.get("open", [])),
+        "open_positions_detail": mtm.get("open_positions", []),
         "closed_today":  len([
             t for t in pos.get("closed", [])
-            if t.get("closed_at", "")[:10] == datetime.now(ET).strftime("%Y-%m-%d")
+            if t.get("closed_at", "")[:10] == today
         ]),
         "comparison":    comp,
         "kelly_today":   perf.get("kelly", {}),

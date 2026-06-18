@@ -137,13 +137,16 @@ def get_economic_calendar() -> dict:
         days = (d - today).days
         if -1 <= days <= 30:  # 昨天到未来30天
             risk  = "🔴 极高" if abs(days) <= 1 else "🟡 高" if days <= 7 else "🟢 正常"
-            action = (
-                "今日/明日 FOMC 决议！禁止开新仓，等待决议后方向确认"
-                if abs(days) <= 1 else
-                f"FOMC 在 {days} 天后，注意仓位风险，不宜过重"
-                if days <= 5 else
-                f"FOMC 在 {days} 天后，正常交易"
-            )
+            if days == -1:
+                action = f"昨日（{fd}）FOMC已公布决议，今日市场仍在消化，谨慎开新仓"
+            elif days == 0:
+                action = "今日 FOMC 决议！禁止开新仓，等待决议后方向确认"
+            elif days == 1:
+                action = "明日 FOMC 决议！今日降低新仓比例，注意提前风险"
+            elif days <= 5:
+                action = f"FOMC 在 {days} 天后，注意仓位风险，不宜过重"
+            else:
+                action = f"FOMC 在 {days} 天后，正常交易"
             events.append({
                 "name":      "FOMC 利率决议",
                 "date":      fd,
@@ -152,8 +155,12 @@ def get_economic_calendar() -> dict:
                 "action":    action,
                 "impact":    "利率方向影响全市场，不确定性最高",
             })
-            if abs(days) <= 1:
-                warnings.append(f"⚠️ FOMC 决议日（{fd}），禁止开新仓")
+            if days == -1:
+                warnings.append(f"📌 昨日FOMC已决议（{fd}），今日市场消化期，谨慎建仓")
+            elif days == 0:
+                warnings.append(f"🚨 今日FOMC决议（{fd}），禁止开新仓")
+            elif days == 1:
+                warnings.append(f"⚠️ 明日FOMC决议（{fd}），今日降低新仓")
 
     # CPI
     cpi_day = _this_month_cpi_day()
@@ -732,7 +739,8 @@ def format_macro_telegram(report: dict) -> str:
     if not report.get("ok"):
         return f"❌ 宏观报告失败"
 
-    lines = ["🌍 <b>宏观环境报告</b>", report.get("risk_environment", ""), ""]
+    today_str = datetime.now(ET).strftime("%Y-%m-%d")
+    lines = [f"🌍 <b>宏观环境报告</b>  {today_str}", report.get("risk_environment", ""), ""]
 
     cal = report.get("economic_calendar", {})
     if cal.get("warnings"):

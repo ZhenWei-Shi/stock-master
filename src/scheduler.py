@@ -121,7 +121,7 @@ def notify_daily_report(report: dict):
     risk = perf.get("risk_metrics", {})
 
     msg = (
-        f"📈 <b>每日报告</b> {report.get('report_date', '')}\n\n"
+        f"📈 <b>每日报告</b>  {report.get('report_date', '')}\n\n"
         f"账户总值：${summ.get('current_value', 0):,.2f}\n"
         f"总P&L：${summ.get('total_pnl', 0):+.2f} "
         f"({summ.get('total_pnl_pct', 0):+.1f}%)\n"
@@ -130,6 +130,26 @@ def notify_daily_report(report: dict):
         f"Sharpe：{risk.get('sharpe_ratio', 0):.2f} | "
         f"最大回撤：{risk.get('max_drawdown_pct', 0):.1f}%\n"
     )
+
+    # 当前持仓明细
+    positions = report.get("open_positions_detail", [])
+    if positions:
+        msg += "\n📂 <b>当前持仓</b>\n"
+        for p in positions[:5]:
+            pnl = p.get("unrealized_pnl", 0)
+            pct = p.get("unrealized_pct", 0)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            msg += (
+                f"{emoji} <b>{p['ticker']}</b> {p['shares']}股\n"
+                f"  现价 ${p['current_price']:.2f}  入场 ${p['entry_price']:.2f}\n"
+                f"  止损 ${p['stop_loss']:.2f}  目标 ${p['target']:.2f}\n"
+                f"  未实现 ${pnl:+.2f} ({pct:+.1f}%)\n"
+            )
+            if p.get("alert"):
+                msg += f"  {p['alert']}\n"
+    elif report.get("open_positions", 0) == 0:
+        msg += "\n📂 当前无持仓\n"
+
     if risk.get("circuit_breaker"):
         msg += "\n🚨 熔断器激活！请复盘后手动解除"
 
@@ -279,7 +299,7 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
     if use_telegram:
         if go_signals:
             for sig in go_signals:
-                send_telegram(
+                msg_sig = (
                     f"🚀 <b>Agent GO信号</b>\n"
                     f"<b>{sig['ticker']}</b> @ ${sig.get('price', 0):.2f}\n"
                     f"冷静评分：{sig.get('score', 0)}\n"
@@ -287,8 +307,22 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                     f"看多力度：{sig.get('bull_conviction', 'N/A')} | "
                     f"风险：{sig.get('bear_severity', 'N/A')}\n"
                     f"Kelly仓位：${sig.get('kelly_usd', 0):.0f}\n"
-                    f"详情：/api/debate-with-cold?ticker={sig['ticker']}&account={account:.0f}"
                 )
+                entry  = sig.get("entry_price")
+                stop   = sig.get("stop_loss")
+                target = sig.get("target_1")
+                shares = sig.get("shares")
+                if entry and stop and target:
+                    rr = (target - entry) / (entry - stop) if entry > stop else 0
+                    msg_sig += (
+                        f"—\n"
+                        f"入场区间：${entry:.2f}"
+                        f"{f'  ×{shares}股' if shares else ''}\n"
+                        f"止损：${stop:.2f} | 目标：${target:.2f}\n"
+                        f"R:R = 1:{rr:.1f}\n"
+                    )
+                msg_sig += f"详情：/api/debate-with-cold?ticker={sig['ticker']}&account={account:.0f}"
+                send_telegram(msg_sig)
         else:
             send_telegram(f"📊 扫描完成，本次无GO信号（已扫{len(scan_list)}只）")
 
