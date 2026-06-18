@@ -15,7 +15,7 @@
 重要说明：
   系统不会自动修改策略参数（防止过拟合近期市场）
   只生成警告，最终由人类决策是否调整
-  需要至少 20 笔历史交易才能产生可信的模式
+  需要至少 30 笔历史交易才能产生可信的模式（MIN_TRADES_FOR_LEARNING = 30）
 """
 
 import os
@@ -61,12 +61,10 @@ def record_entry_signals(trade_id: str, ticker: str,
         "hold_days":      None,
     }
 
-    # 提取各关信号状态
-    for gate in cold_result.get("gates", []):
-        gid   = str(gate.get("gate", ""))
-        gname = gate.get("name", "")
-        gstat = gate.get("status", "")
-        signals["gates"][gid] = gstat
+    # 提取各关信号状态（gates 是 dict: {name: {"pass": True/False/"warn", "note": ...}}）
+    for gate_name, gate_data in cold_result.get("gates", {}).items():
+        p = gate_data.get("pass")
+        signals["gates"][gate_name] = "pass" if p is True else ("warn" if p == "warn" else "fail")
 
     # 辩论结论
     if debate_result:
@@ -226,8 +224,9 @@ def check_anti_patterns(cold_result: dict) -> dict:
 
     # 检查危险关卡
     current_gates = {}
-    for gate in cold_result.get("gates", []):
-        current_gates[str(gate.get("gate", ""))] = gate.get("status", "")
+    for gate_name, gate_data in cold_result.get("gates", {}).items():
+        p = gate_data.get("pass")
+        current_gates[gate_name] = "pass" if p is True else ("warn" if p == "warn" else "fail")
 
     for gid, info in patterns.get("danger_gates", {}).items():
         if current_gates.get(gid) == "fail":

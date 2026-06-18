@@ -245,7 +245,8 @@ def calculate_gex(ticker: str) -> dict:
 
         for exp in exps[:3]:  # 只看最近3个到期日
             try:
-                T = max((datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days / 365, 1/365)
+                # 最小0.01年（≈3.6天），防止 T→0 时 Gamma 极值爆炸
+                T = max((datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days / 365, 0.01)
                 chain = tk.option_chain(exp)
 
                 for row in chain.calls.itertuples():

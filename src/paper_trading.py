@@ -411,11 +411,17 @@ def performance_report(mode: str = "paper") -> dict:
     win_rate = len(wins) / total if total > 0 else 0
     avg_win  = float(np.mean(wins))  if wins   else 0
     avg_loss = float(np.mean(losses)) if losses else 0
-    rr_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+    # 全胜时 avg_loss==0：用大值代替 inf，避免 JSON 序列化失败
+    if avg_loss != 0:
+        rr_ratio = abs(avg_win / avg_loss)
+    elif avg_win > 0:
+        rr_ratio = 99.9  # 无亏损记录，极高盈亏比（样本不足）
+    else:
+        rr_ratio = 0.0
 
     # Kelly Criterion（用真实统计数据）
     kelly_f = 0.0
-    if avg_loss != 0 and rr_ratio > 0:
+    if rr_ratio > 0:
         kelly_f = win_rate - (1 - win_rate) / rr_ratio
     half_kelly    = max(0, kelly_f / 2)
     kelly_usd     = acct.get("current_value", 2000) * half_kelly
@@ -426,10 +432,14 @@ def performance_report(mode: str = "paper") -> dict:
         pnl_arr   = np.array(pnl_pcts)
         mean_r    = np.mean(pnl_arr)
         std_r     = np.std(pnl_arr, ddof=1)
-        # 摆动交易年化系数：实际笔数/年（不是252日）
-        trades_per_year = max(total, 1) / max(
-            (datetime.now() - datetime(datetime.now().year, 1, 1)).days / 365, 0.1
-        )
+        # 摆动交易年化系数：基于实际第一笔到现在的时间跨度（不是从1月1日起算）
+        trade_times = [t.get("at", "") for t in data.get("trades", []) if t.get("event") == "close" and t.get("at")]
+        try:
+            first_dt   = datetime.fromisoformat(str(sorted(trade_times)[0])[:19])
+            span_days  = max((datetime.now() - first_dt).days, 30)
+            trades_per_year = total / (span_days / 365)
+        except Exception:
+            trades_per_year = max(total, 1) * 4  # 无法确定时按年化4×估算
         ann_factor = np.sqrt(trades_per_year)
         sharpe  = float(mean_r / std_r * ann_factor) if std_r > 0 else 0
         down_r   = pnl_arr[pnl_arr < 0]

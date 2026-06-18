@@ -636,7 +636,7 @@ def macro_gate_check(ticker: str) -> dict:
         gen_at = snap.get("generated_at", "")
         if gen_at:
             try:
-                age_h = (datetime.now() - datetime.fromisoformat(gen_at[:19])).seconds / 3600
+                age_h = (datetime.now() - datetime.fromisoformat(gen_at[:19])).total_seconds() / 3600
                 if age_h > 2:
                     return {"block": False, "penalty": 0, "bonus": 0,
                             "reason": f"宏观快照已{age_h:.1f}小时，建议刷新"}
