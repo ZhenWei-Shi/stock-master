@@ -46,6 +46,165 @@ def send(msg: str):
 
 
 # ─────────────────────────────────────────────────────────────
+# 股票自动分类
+# ─────────────────────────────────────────────────────────────
+
+# 关键词 → 中文分类标签
+_SECTOR_MAP = {
+    "semiconductor":        "半导体",
+    "semiconductors":       "半导体",
+    "electronic":           "电子元器件",
+    "software":             "软件/SaaS",
+    "cloud":                "云计算",
+    "internet":             "互联网",
+    "artificial intelligence": "人工智能",
+    "data center":          "数据中心",
+    "networking":           "网络设备",
+    "cybersecurity":        "网络安全",
+    "biotechnology":        "生物科技",
+    "pharmaceutical":       "制药",
+    "healthcare":           "医疗",
+    "financial":            "金融科技",
+    "bank":                 "银行",
+    "energy":               "能源",
+    "oil":                  "石油天然气",
+    "electric":             "新能源/电动车",
+    "consumer":             "消费",
+    "retail":               "零售",
+    "aerospace":            "航空航天",
+    "defense":              "国防",
+    "real estate":          "房地产/REIT",
+    "utilities":            "公用事业",
+    "communication":        "通信",
+    "media":                "传媒",
+    "entertainment":        "娱乐",
+    "e-commerce":           "电商",
+}
+
+_SUPPLY_CHAIN_MAP = {
+    # AI 供应链层级
+    "NVDA": ("AI芯片", "供应链第1层：算力核心"),
+    "AMD":  ("AI芯片/CPU", "供应链第1层：算力核心"),
+    "INTC": ("CPU/晶圆代工", "供应链第1层：算力核心"),
+    "AVGO": ("AI网络芯片", "供应链第1层：互联芯片"),
+    "MRVL": ("数据中心芯片", "供应链第1层：算力核心"),
+    "QCOM": ("移动芯片", "供应链第1层：端侧AI"),
+    "ARM":  ("芯片IP授权", "供应链第1层：底层架构"),
+    # 半导体设备
+    "AMAT": ("半导体设备", "供应链第0层：制造设备"),
+    "LRCX": ("半导体设备", "供应链第0层：刻蚀设备"),
+    "KLAC": ("半导体检测", "供应链第0层：良率控制"),
+    "ASML": ("光刻机", "供应链第0层：最上游"),
+    # 先进封装/HBM
+    "COHR": ("光子/先进封装", "供应链第0.5层：封装材料"),
+    "LITE": ("光模块", "供应链第1.5层：数据中心互联"),
+    "AXTI": ("砷化镓衬底", "供应链第0层：化合物半导体"),
+    "AAOI": ("光模块", "供应链第1.5层：AI网络互联"),
+    # 云/数据中心
+    "MSFT": ("云计算/AI应用", "供应链第3层：AI使能者"),
+    "GOOGL":("云计算/AI搜索","供应链第3层：AI使能者"),
+    "AMZN": ("云计算/电商", "供应链第3层：AI基础设施"),
+    "META": ("AI社交/广告", "供应链第3层：AI应用"),
+    "ORCL": ("云数据库", "供应链第2层：企业AI"),
+    # 电力/散热
+    "VRT":  ("数据中心散热", "供应链第1层：基础设施"),
+    "CEG":  ("核电/清洁能源", "供应链第0层：AI电力"),
+    "VST":  ("电力供应", "供应链第0层：AI电力"),
+    # 消费科技
+    "AAPL": ("消费电子/生态", "供应链第4层：终端设备"),
+    "TSLA": ("电动车/AI机器人", "跨界：能源+AI"),
+}
+
+
+def classify_ticker(ticker: str) -> dict:
+    """
+    自动分析股票所属行业、供应链位置、风险等级。
+    数据源：yfinance info（免费）
+    """
+    import yfinance as yf
+
+    result = {
+        "ticker":         ticker,
+        "name":           ticker,
+        "sector":         "未知",
+        "industry":       "未知",
+        "category":       "未知",
+        "supply_chain":   None,
+        "market_cap":     None,
+        "market_cap_label": "未知",
+        "risk_level":     "中",
+        "note":           "",
+    }
+
+    # 先查内置供应链映射
+    if ticker in _SUPPLY_CHAIN_MAP:
+        result["category"], result["supply_chain"] = _SUPPLY_CHAIN_MAP[ticker]
+
+    try:
+        info = yf.Ticker(ticker).info
+        result["name"] = info.get("shortName") or info.get("longName") or ticker
+
+        sector   = (info.get("sector") or "").lower()
+        industry = (info.get("industry") or "").lower()
+        combined = sector + " " + industry
+
+        # 行业分类
+        for kw, label in _SECTOR_MAP.items():
+            if kw in combined:
+                result["sector"]   = label
+                result["industry"] = info.get("industry", "")
+                if not result["category"] or result["category"] == "未知":
+                    result["category"] = label
+                break
+
+        # 市值分级
+        cap = info.get("marketCap") or 0
+        result["market_cap"] = cap
+        if cap >= 1_000_000_000_000:
+            result["market_cap_label"] = f"超大盘（${cap/1e12:.1f}T）"
+            result["risk_level"] = "低"
+        elif cap >= 100_000_000_000:
+            result["market_cap_label"] = f"大盘（${cap/1e9:.0f}B）"
+            result["risk_level"] = "低中"
+        elif cap >= 10_000_000_000:
+            result["market_cap_label"] = f"中盘（${cap/1e9:.0f}B）"
+            result["risk_level"] = "中"
+        elif cap >= 2_000_000_000:
+            result["market_cap_label"] = f"小盘（${cap/1e9:.1f}B）"
+            result["risk_level"] = "中高"
+        elif cap > 0:
+            result["market_cap_label"] = f"微盘（${cap/1e6:.0f}M）"
+            result["risk_level"] = "高"
+
+        # 额外标注
+        beta = info.get("beta") or 1.0
+        if beta > 2.0:
+            result["note"] += f"⚡ 高Beta({beta:.1f})，波动剧烈 "
+        if info.get("shortPercentOfFloat", 0) > 0.15:
+            result["note"] += f"🐻 空头比例{info['shortPercentOfFloat']*100:.0f}%，注意轧空 "
+
+    except Exception as e:
+        result["note"] = f"数据获取失败：{e}"
+
+    return result
+
+
+def format_classification(r: dict) -> str:
+    lines = [f"📌 <b>{r['ticker']}</b> — {r['name']}"]
+    if r["category"] != "未知":
+        lines.append(f"分类：{r['category']}")
+    if r["supply_chain"]:
+        lines.append(f"供应链：{r['supply_chain']}")
+    if r["sector"] != "未知":
+        lines.append(f"行业：{r['sector']}")
+    lines.append(f"市值：{r['market_cap_label']}")
+    lines.append(f"风险：{r['risk_level']}")
+    if r["note"]:
+        lines.append(r["note"].strip())
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
 # 自选股文件读写
 # ─────────────────────────────────────────────────────────────
 
@@ -107,10 +266,20 @@ def handle_command(text: str):
                 wl.append(t)
                 added.append(t)
         write_watchlist(wl)
-        if added:
-            send(f"✅ 已添加：{', '.join(added)}\n当前共 {len(wl)} 只\n\n重启Agent后生效，或发 /scan 立即扫描")
-        else:
+        if not added:
             send(f"这些股票已在列表中：{', '.join(new_tickers)}")
+            return
+        send(f"✅ 已添加 {len(added)} 只，正在分析分类...")
+        # 后台分类分析，逐个发送结果
+        def classify_and_report():
+            for t in added:
+                try:
+                    r = classify_ticker(t)
+                    send(format_classification(r))
+                except Exception as e:
+                    send(f"{t} 分类失败：{e}")
+            send(f"\n📋 当前自选股共 {len(wl)} 只\n发 /scan 立即扫描")
+        threading.Thread(target=classify_and_report, daemon=True).start()
 
     elif cmd == "/remove":
         del_tickers = [p.upper() for p in parts[1:] if p.isalpha()]
