@@ -315,8 +315,11 @@ def weekly_learning_report() -> str:
 def _load_feedback() -> list:
     if not os.path.exists(_FB_LOG):
         return []
-    with open(_FB_LOG, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(_FB_LOG, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 def _save_feedback(data: list):

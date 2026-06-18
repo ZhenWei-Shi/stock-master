@@ -58,7 +58,7 @@ def run_scan(watchlist: list, account_value: float = 2000,
     from .cold_model import cold_decision
     from .debate import generate_trade_debate
     from .paper_trading import open_position, list_positions, mark_to_market
-    from .pdt_guard import check_pdt_risk
+    from .pdt_guard import check_pdt_risk, get_rolling_day_trades
 
     now        = datetime.now(ET)
     scan_time  = now.strftime("%Y-%m-%d %H:%M ET")
@@ -66,8 +66,9 @@ def run_scan(watchlist: list, account_value: float = 2000,
     go_signals = []
     errors     = []
 
-    # PDT 状态检查
-    pdt_check = check_pdt_risk(account_value, "margin", 0)
+    # PDT 状态检查（从持久化日志读取真实5日滚动次数）
+    pdt_used  = get_rolling_day_trades()
+    pdt_check = check_pdt_risk(account_value, "margin", pdt_used)
 
     print(f"\n[Agent] 开始扫描 {len(watchlist)} 只股票 @ {scan_time}")
     print(f"[Agent] 账户：${account_value:,.0f} | PDT状态：{pdt_check['status']}\n")
@@ -135,7 +136,15 @@ def run_scan(watchlist: list, account_value: float = 2000,
     auto_opened = []
     if auto_paper and go_signals:
         print(f"\n[Agent] 发现 {len(go_signals)} 个高质量信号，开模拟仓...")
-        for sig in go_signals[:3]:  # 最多同时持有3个仓位
+        try:
+            existing = list_positions(mode)
+            current_open_count = len(existing.get("open", []))
+        except Exception:
+            current_open_count = 0
+        slots = max(0, 3 - current_open_count)
+        if slots == 0:
+            print("[Agent] 已有3个持仓，跳过本次开仓")
+        for sig in go_signals[:slots]:  # 剩余可用仓位槽
             ep = sig["cold"].get("entry_plan", {})
             if not ep or ep.get("shares", 0) < 1:
                 continue

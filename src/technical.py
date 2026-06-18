@@ -132,29 +132,29 @@ def get_extended_indicators(hist: pd.DataFrame) -> dict:
         price = float(close.iloc[-1])
 
         # Stochastic %K/%D
-        stoch  = ta.stoch(df["High"], df["Low"], close)
+        stoch  = _ta.stoch(df["High"], df["Low"], close)
         stk    = round(float(stoch.iloc[-1, 0]), 1) if stoch is not None and not stoch.empty else None
         std    = round(float(stoch.iloc[-1, 1]), 1) if stoch is not None and not stoch.empty else None
 
         # OBV（量价方向）
-        obv      = ta.obv(close, df["Volume"])
+        obv      = _ta.obv(close, df["Volume"])
         obv_val  = float(obv.iloc[-1]) if obv is not None else None
         obv_trend = None
         if obv is not None and len(obv) >= 5:
             obv_trend = "rising" if float(obv.iloc[-1]) > float(obv.iloc[-5]) else "falling"
 
         # Williams %R
-        willr = ta.willr(df["High"], df["Low"], close)
+        willr = _ta.willr(df["High"], df["Low"], close)
         wr    = round(float(willr.iloc[-1]), 1) if willr is not None else None
 
         # CCI
-        cci     = ta.cci(df["High"], df["Low"], close)
+        cci     = _ta.cci(df["High"], df["Low"], close)
         cci_val = round(float(cci.iloc[-1]), 1) if cci is not None else None
 
         # Ichimoku（仅 Tenkan/Kijun，不传 lookahead 避免未来数据）
         tenkan, kijun = None, None
         try:
-            ichi = ta.ichimoku(df["High"], df["Low"], close, lookahead=False)
+            ichi = _ta.ichimoku(df["High"], df["Low"], close, lookahead=False)
             if ichi is not None:
                 ich_df = ichi[0] if isinstance(ichi, tuple) else ichi
                 if not ich_df.empty and ich_df.shape[1] >= 2:
@@ -214,7 +214,7 @@ def get_advanced_indicators(hist: pd.DataFrame) -> dict:
         df = hist.copy()
 
         # Supertrend (7, 3.0) — 日内追踪止损方向基准
-        st = ta.supertrend(df["High"], df["Low"], df["Close"], length=7, multiplier=3.0)
+        st = _ta.supertrend(df["High"], df["Low"], df["Close"], length=7, multiplier=3.0)
         supertrend_val, supertrend_dir = None, None
         if st is not None:
             val_col = [c for c in st.columns if c.startswith("SUPERT_7") and "d" not in c and "s" not in c]
@@ -223,7 +223,7 @@ def get_advanced_indicators(hist: pd.DataFrame) -> dict:
             supertrend_dir = int(st[dir_col[0]].iloc[-1]) if dir_col else None  # 1=多头, -1=空头
 
         # Squeeze Momentum (LazyBear)
-        sqz = ta.squeeze(df["High"], df["Low"], df["Close"], df["Volume"])
+        sqz = _ta.squeeze(df["High"], df["Low"], df["Close"], df["Volume"])
         sqz_val = None
         if sqz is not None:
             h_col = [c for c in sqz.columns if "SQZ_" in c

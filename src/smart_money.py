@@ -145,11 +145,11 @@ def detect_unusual_options(ticker: str) -> dict:
                         otm = df[df["strike"] < price * 0.99]
 
                     for _, row in otm.iterrows():
-                        vol = int(row.get("volume") or 0)
-                        oi  = int(row.get("openInterest") or 1)
-                        if oi < 1:
-                            oi = 1
-                        ratio = vol / oi
+                        vol    = int(row.get("volume") or 0)
+                        oi_raw = int(row.get("openInterest") or 0)
+                        if oi_raw < 1:
+                            continue  # OI=0 的合约无法计算有效 Vol/OI，跳过
+                        ratio = vol / oi_raw
 
                         if vol < 100:
                             continue

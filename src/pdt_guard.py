@@ -32,6 +32,56 @@ PDT_WEEK_LIMIT  = 3        # 5个交易日内最多日内交易次数
 
 
 # ─────────────────────────────────────────────────────────────
+# PDT 日志持久化（5日滚动窗口）
+# ─────────────────────────────────────────────────────────────
+
+def _load_pdt_log() -> dict:
+    if not os.path.exists(_DB):
+        return {}
+    try:
+        with open(_DB, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_pdt_log(data: dict):
+    os.makedirs(os.path.dirname(_DB), exist_ok=True)
+    try:
+        with open(_DB, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    except OSError:
+        pass
+
+
+def record_day_trade(ticker: str):
+    """平仓时如果当日开平（日内交易），调用此函数持久化记录"""
+    data = _load_pdt_log()
+    today = str(date.today())
+    data.setdefault(today, []).append({
+        "ticker": ticker.upper(),
+        "at": datetime.now(ET).isoformat(),
+    })
+    _save_pdt_log(data)
+
+
+def get_rolling_day_trades() -> int:
+    """统计过去5个交易日（近似跳过周末）内的日内交易次数（真实PDT滚动窗口）"""
+    data = _load_pdt_log()
+    today = date.today()
+    count = 0
+    trading_days = 0
+    for offset in range(14):  # 最多回溯14日历日，取5个交易日
+        d = today - timedelta(days=offset)
+        if d.weekday() < 5:  # 跳过周末
+            count += len(data.get(str(d), []))
+            trading_days += 1
+            if trading_days >= 5:
+                break
+    return count
+
+
+# ─────────────────────────────────────────────────────────────
 # 主入口：PDT 风险评估
 # ─────────────────────────────────────────────────────────────
 

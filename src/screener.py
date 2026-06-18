@@ -102,12 +102,10 @@ def _fetch_universe_scores() -> list:
     )
     for tk in _SP500_UNIVERSE:
         try:
-            if isinstance(data.columns, yf.multi.MultiLevel if hasattr(yf, "multi") else type(None)):
+            if isinstance(data.columns, pd.MultiIndex):
                 hist = data[tk].dropna() if tk in data.columns.get_level_values(0) else None
             else:
-                hist = data[[c for c in data.columns
-                             if c[0] == tk and c[1] == "Close"]]
-                hist = hist.rename(columns=lambda x: x[1])
+                hist = data  # 单 ticker 下载时列已是平铺结构
             if hist is None or hist.empty or "Close" not in hist.columns:
                 continue
             scores.append(_oneil_score(hist))

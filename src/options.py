@@ -21,15 +21,17 @@ def calculate_max_pain(calls: pd.DataFrame, puts: pd.DataFrame, current_price: f
         # 只看当前价格 50%~200% 范围内的行权价
         strikes = [s for s in all_strikes if current_price * 0.5 <= s <= current_price * 2.0] or all_strikes
 
+        calls_clean = calls.fillna({"openInterest": 0, "volume": 0})
+        puts_clean  = puts.fillna({"openInterest": 0, "volume": 0})
         pain_map = {}
         for p in strikes:
             call_pain = sum(
                 max(0, p - row.strike) * row.openInterest * 100
-                for row in calls.itertuples()
+                for row in calls_clean.itertuples()
             )
             put_pain = sum(
                 max(0, row.strike - p) * row.openInterest * 100
-                for row in puts.itertuples()
+                for row in puts_clean.itertuples()
             )
             pain_map[p] = call_pain + put_pain
 

@@ -428,9 +428,6 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # ── 最终评分 ─────────────────────────────────────────
     score = _calc_score(gates, vix_val, aggressive_mode)
 
-    hard_fail = [k for k, v in gates.items()
-                 if v.get("pass") is False]
-
     # ── PDT 检查（小账户核心保护） ───────────────────────
     pdt_status = check_pdt_risk(portfolio, account_type, day_trades_used)
     pdt_trigger = will_trigger_pdt(day_trades_used, portfolio, is_intraday, account_type)
@@ -451,6 +448,10 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             "pass": True,
             "note": pdt_trigger.get("note", "PDT检查通过"),
         }
+
+    # PDT gate 写入后再计算 hard_fail，确保 PDT 触发能走 ABORT 路径
+    hard_fail = [k for k, v in gates.items()
+                 if v.get("pass") is False]
 
     # ── 激进模式额外加分项 ────────────────────────────────
     bonus = 0
@@ -760,7 +761,7 @@ def _calc_atr(hist: pd.DataFrame, period: int = 14) -> float:
         (hist["High"] - hist["Close"].shift()).abs(),
         (hist["Low"]  - hist["Close"].shift()).abs(),
     ], axis=1).max(axis=1)
-    val = float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
+    val = float(tr.ewm(com=period - 1, adjust=False).mean().iloc[-1])
     return val if val == val else float(hist["Close"].iloc[-1]) * 0.015
 
 

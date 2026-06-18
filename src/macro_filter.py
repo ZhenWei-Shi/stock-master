@@ -94,15 +94,33 @@ _FOMC_DATES_2026 = [
 ]
 _ALL_FOMC = set(_FOMC_DATES_2025 + _FOMC_DATES_2026)
 
+# BLS 官方 CPI 发布日（提前锁定，避免"第2个周三"算法误差）
+_CPI_DATES_2025 = [
+    "2025-01-15", "2025-02-12", "2025-03-12", "2025-04-10",
+    "2025-05-13", "2025-06-11", "2025-07-15", "2025-08-12",
+    "2025-09-10", "2025-10-15", "2025-11-13", "2025-12-10",
+]
+_CPI_DATES_2026 = [
+    "2026-01-14", "2026-02-11", "2026-03-11", "2026-04-09",
+    "2026-05-12", "2026-06-10", "2026-07-14", "2026-08-12",
+    "2026-09-09", "2026-10-14", "2026-11-12", "2026-12-09",
+]
+_ALL_CPI = set(_CPI_DATES_2025 + _CPI_DATES_2026)
+
 
 def _this_month_cpi_day() -> Optional[str]:
-    """CPI 发布日：每月第2个周三（估算，BLS 实际日期可能略有不同）"""
+    """CPI 发布日：优先查官方日历，缺失时退回第2个周三估算"""
     today = date.today()
+    today_str = str(today)[:7]  # "YYYY-MM"
+    for d in _ALL_CPI:
+        if d.startswith(today_str):
+            return d
+    # 兜底：算法估算（仅用于官方日历未覆盖的月份）
     first = date(today.year, today.month, 1)
     wed_count = 0
     for d in range(1, 20):
         day = first + timedelta(days=d - 1)
-        if day.weekday() == 2:  # 周三
+        if day.weekday() == 2:
             wed_count += 1
             if wed_count == 2:
                 return str(day)

@@ -8,6 +8,7 @@
 """
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 
 def detect_market_state(spy_hist: pd.DataFrame, vix: float) -> dict:

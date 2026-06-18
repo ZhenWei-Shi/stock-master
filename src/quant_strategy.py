@@ -87,8 +87,16 @@ def strategy_vwap_reversion(hist: pd.DataFrame, ticker: str) -> dict:
     if hist.empty or len(hist) < 20:
         return _no_signal("日内数据不足")
 
-    typical_price = (hist["High"] + hist["Low"] + hist["Close"]) / 3
-    vwap = (typical_price * hist["Volume"]).cumsum() / hist["Volume"].cumsum()
+    # VWAP 仅计算当日数据（5d 历史含多天，跨日累计会产生错误基线）
+    try:
+        last_date  = hist.index[-1].date()
+        hist_today = hist[hist.index.date == last_date]
+        if len(hist_today) < 5:
+            hist_today = hist
+    except Exception:
+        hist_today = hist
+    typical_price = (hist_today["High"] + hist_today["Low"] + hist_today["Close"]) / 3
+    vwap = (typical_price * hist_today["Volume"]).cumsum() / hist_today["Volume"].cumsum()
 
     price    = float(hist["Close"].iloc[-1])
     vwap_val = float(vwap.iloc[-1])
@@ -267,7 +275,7 @@ def strategy_squeeze(hist: pd.DataFrame, ticker: str) -> dict:
 
     try:
         df  = hist.copy()
-        sqz = ta.squeeze(df["High"], df["Low"], df["Close"], df["Volume"])
+        sqz = _ta.squeeze(df["High"], df["Low"], df["Close"], df["Volume"])
         if sqz is None or sqz.empty:
             return _no_signal("Squeeze计算失败")
 
