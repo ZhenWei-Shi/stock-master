@@ -442,6 +442,27 @@ def print_deployment_guide():
 # CLI
 # ─────────────────────────────────────────────────────────────
 
+def load_watchlist(watchlist_arg: str) -> list:
+    """
+    读取自选股列表。优先级：
+      1. watchlist.txt 文件（每行一个代码）
+      2. --watchlist 命令行参数
+      3. 内置默认列表
+    """
+    wl_file = os.path.join(os.path.dirname(__file__), "..", "watchlist.txt")
+    if os.path.exists(wl_file):
+        with open(wl_file, "r", encoding="utf-8") as f:
+            tickers = [
+                line.strip().upper()
+                for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
+        if tickers:
+            print(f"[Scheduler] 从 watchlist.txt 加载 {len(tickers)} 只股票")
+            return tickers
+    return [t.strip().upper() for t in watchlist_arg.split(",") if t.strip()]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TradingAgent Scheduler")
     parser.add_argument("--watchlist", default=",".join(DEFAULT_WATCHLIST))
@@ -452,7 +473,7 @@ if __name__ == "__main__":
     parser.add_argument("--deploy",    action="store_true", help="打印部署指南")
     args = parser.parse_args()
 
-    tickers = [t.strip().upper() for t in args.watchlist.split(",") if t.strip()]
+    tickers = load_watchlist(args.watchlist)
 
     if args.deploy:
         print_deployment_guide()
