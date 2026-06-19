@@ -32,7 +32,7 @@ ET = pytz.timezone("America/New_York")
 # ══════════════════════════════════════════════════════════════
 # 评分权重常量
 # ══════════════════════════════════════════════════════════════
-W_GROWTH_MAX     = 35   # 业务增长质量上限
+W_GROWTH_MAX     = 40   # 业务增长质量上限（含行业护城河先验加分，最高+8）
 W_BALANCE_MAX    = 25   # 资产负债健康上限
 W_TREND_MAX      = 25   # 长期趋势上限
 W_VALUATION_MAX  = 15   # 估值合理性上限
@@ -124,6 +124,13 @@ def _score_growth(info: dict) -> tuple[int, list, list]:
         else:
             neg.append(f"FCF为负（{fcf/1e9:.2f}B），依赖持续融资")
 
+    # 行业护城河先验加分（业务质量维度，不放入估值桶避免被截断）
+    sector = info.get("sector", "")
+    bonus = MOAT_SECTOR_BONUS.get(sector, 0)
+    if bonus:
+        score += bonus
+        pos.append(f"行业护城河：{sector}（+{bonus}）")
+
     return min(score, W_GROWTH_MAX), pos, neg
 
 
@@ -134,20 +141,25 @@ def _score_balance(info: dict) -> tuple[int, list, list]:
     """
     score, pos, neg = 0, [], []
 
-    # 债务/权益比（debtToEquity，越低越安全）
+    # 债务/权益比（debtToEquity，yfinance 以百分比形式返回，需 /100 转换为比率）
     de = _safe(info.get("debtToEquity"))
     if de is not None:
-        de_norm = de / 100  # yfinance 返回的是百分比形式
-        if de_norm < 0.2:
-            score += 15; pos.append(f"债务/权益 {de_norm:.2f}（极低负债，财务堡垒）")
-        elif de_norm < 0.5:
-            score += 10; pos.append(f"债务/权益 {de_norm:.2f}（健康）")
-        elif de_norm < 1.0:
-            score += 5;  pos.append(f"债务/权益 {de_norm:.2f}（可接受）")
-        elif de_norm < 2.0:
-            score += 2;  neg.append(f"债务/权益 {de_norm:.2f}（偏高，需关注利息覆盖）")
+        if de < 0:
+            # 负权益：大量回购或累计亏损导致账面权益为负（MCD/SBUX/NKE 均如此）
+            # 不等同于低债务，需结合FCF和利息覆盖判断，此处保守处理
+            neg.append(f"账面权益为负（D/E={de/100:.1f}），源于大量回购或累计亏损，需关注利息覆盖能力")
         else:
-            neg.append(f"债务/权益 {de_norm:.2f}（过高负债，长持风险大）")
+            de_norm = de / 100  # 转换为实际比率
+            if de_norm < 0.2:
+                score += 15; pos.append(f"债务/权益 {de_norm:.2f}（极低负债，财务堡垒）")
+            elif de_norm < 0.5:
+                score += 10; pos.append(f"债务/权益 {de_norm:.2f}（健康）")
+            elif de_norm < 1.0:
+                score += 5;  pos.append(f"债务/权益 {de_norm:.2f}（可接受）")
+            elif de_norm < 2.0:
+                score += 2;  neg.append(f"债务/权益 {de_norm:.2f}（偏高，需关注利息覆盖）")
+            else:
+                neg.append(f"债务/权益 {de_norm:.2f}（过高负债，长持风险大）")
 
     # 流动比率（currentRatio，>2 安全，<1 危险）
     cr = _safe(info.get("currentRatio"))
@@ -161,15 +173,15 @@ def _score_balance(info: dict) -> tuple[int, list, list]:
         else:
             neg.append(f"流动比率 {cr:.2f}（<1，短期偿债压力）")
 
-    # 股份稀释检查（sharesOutstanding vs implied dilution via floatShares）
-    shares = _safe(info.get("sharesOutstanding"))
-    float_s = _safe(info.get("floatShares"))
-    if shares and float_s and shares > 0:
-        dilution_est = (shares - float_s) / shares
-        if dilution_est < 0.05:
-            score += 3; pos.append("股权结构稳定（无明显稀释）")
-        elif dilution_est > 0.20:
-            neg.append(f"疑似高稀释比例 {dilution_est*100:.1f}%（需验证增发历史）")
+    # 股权结构：用内部人持股比例 + 机构持仓作为健康度代理
+    # 注意：floatShares vs sharesOutstanding 差值 = 内部人持股，不是稀释比例
+    insider_pct = _safe(info.get("heldPercentInsiders"))
+    inst_pct    = _safe(info.get("institutionPercentHeld"))
+    if insider_pct is not None:
+        if insider_pct > 0.05:
+            score += 3; pos.append(f"内部人持股 {insider_pct*100:.1f}%（管理层利益与股东一致）")
+        elif insider_pct < 0.01 and inst_pct is not None and inst_pct < 0.50:
+            neg.append("内部人持股极低且机构持仓不足（所有权分散，管理层激励偏弱）")
 
     return min(score, W_BALANCE_MAX), pos, neg
 
@@ -283,13 +295,6 @@ def _score_valuation(info: dict) -> tuple[int, list, list]:
             else:
                 neg.append(f"P/S {ps:.1f}x（估值偏高）")
 
-    # 行业护城河先验加分
-    sector = info.get("sector", "")
-    bonus = MOAT_SECTOR_BONUS.get(sector, 0)
-    if bonus:
-        score += bonus
-        pos.append(f"行业护城河加分：{sector}（+{bonus}）")
-
     return min(score, W_VALUATION_MAX), pos, neg
 
 
@@ -310,11 +315,15 @@ def _hard_veto(info: dict) -> str | None:
     if de is not None and de > 300:  # D/E > 3.0（百分比形式>300）
         return f"债务/权益 {de/100:.1f}（极高杠杆，破产风险）"
 
-    # 严重亏损且无增长迹象
-    fcf = _safe(info.get("freeCashflow"))
+    # 严重亏损且无增长迹象：FCF/市值 < -15%（年烧>15%市值）且营收增速低
+    fcf  = _safe(info.get("freeCashflow"))
+    mcap = _safe(info.get("marketCap"))
     rev_g2 = _safe(info.get("revenueGrowth"), 0)
-    if fcf is not None and fcf < -1e9 and rev_g2 < 0.10:
-        return f"FCF严重为负（{fcf/1e9:.1f}B）且营收增速仅{rev_g2*100:.0f}%，烧钱无出路"
+    if fcf is not None and fcf < 0 and mcap and mcap > 0:
+        fcf_yield = fcf / mcap  # 负值 = 烧钱比例
+        if fcf_yield < -0.15 and rev_g2 < 0.10:
+            return (f"FCF烧钱率 {fcf_yield*100:.0f}%/年（相对市值），"
+                    f"营收增速仅{rev_g2*100:.0f}%，无足够增长支撑")
 
     return None
 
@@ -500,9 +509,12 @@ def format_longhold_telegram(results: list) -> str:
 
 
 def format_longhold_inline(result: dict) -> str:
-    """用于摆动交易 GO 信号旁显示的单行长持摘要。"""
-    if result.get("error") or result.get("veto"):
+    """用于摆动交易 GO 信号旁显示的单行长持摘要。SKIP 也要显示警告。"""
+    if result.get("error"):
         return ""
+    # 被否决的票：显示否决原因，提醒用户这只是纯摆动机会
+    if result.get("veto"):
+        return f"\n🔴 <b>长持警告</b>：{result['veto']}（仅适合纯摆动）"
     icon    = _VERDICT_ICON.get(result["verdict"], "⚪")
     label   = _VERDICT_LABEL.get(result["verdict"], result["verdict"])
     bd      = result.get("breakdown", {})
