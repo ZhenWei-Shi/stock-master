@@ -169,6 +169,7 @@ def run_scan(watchlist: list, account_value: float = 2000,
             print(f"    → 错误：{e}")
 
     # 自动开模拟仓
+    slots_available = MAX_CONCURRENT_POSITIONS  # 默认（不查仓位时保守用上限）
     auto_opened = []
     if auto_paper and go_signals:
         print(f"\n[Agent] 发现 {len(go_signals)} 个高质量信号，开模拟仓...")
@@ -182,6 +183,7 @@ def run_scan(watchlist: list, account_value: float = 2000,
             current_open_count = 0
             current_exposure   = 0
         slots = max(0, MAX_CONCURRENT_POSITIONS - current_open_count)
+        slots_available = slots   # 让 return dict 限制推送数量
         if slots == 0:
             print(f"[Agent] 已有{current_open_count}个持仓（上限{MAX_CONCURRENT_POSITIONS}），跳过本次开仓")
         for sig in go_signals[:slots]:  # 剩余可用仓位槽
@@ -230,7 +232,7 @@ def run_scan(watchlist: list, account_value: float = 2000,
         "auto_opened":   auto_opened,
         "results":       results,
         "go_signals":    [{k: v for k, v in s.items() if k not in ("cold", "debate")}
-                          for s in go_signals],
+                          for s in go_signals[:slots_available]],  # 只推可执行仓位内的信号
         "pdt_status":    pdt_check.get("status"),
         "portfolio_mtm": mtm,
         "errors":        errors,

@@ -605,18 +605,8 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     except Exception:
         pass  # 智能资金模块失败不影响主流程
 
-    # ── SEC Form 4 内部人买卖（真实可验证信号，替代失效的旧UOA）───────
-    try:
-        from .insider_tracker import insider_summary
-        ins = insider_summary(ticker)
-        if ins.get("ok") and ins.get("score_delta", 0) != 0:
-            delta = ins["score_delta"]
-            bonus += delta
-            bonus_notes.append(
-                f"内部人{'+' if delta > 0 else ''}{delta}（{ins.get('note', '')}，SEC Form 4）"
-            )
-    except Exception:
-        pass  # 不影响主流程
+    # insider 信号已移除：Form 4 是1-3年长周期视角，与1-5天摆动模型时间框架不对齐
+    # 会把技术面死叉的股票(55→67)推成GO，产生系统性假信号。insider仍在long_hold中使用。
 
     go_threshold   = 65 if aggressive_mode else 75
     wait_threshold = 45 if aggressive_mode else 55

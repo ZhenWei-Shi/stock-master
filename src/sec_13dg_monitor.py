@@ -19,12 +19,14 @@ import json
 import time
 import requests
 from datetime import datetime, timedelta
+from urllib.parse import quote
 import pytz
 
 ET_TZ = pytz.timezone("America/New_York")
 
 _DATA        = os.path.join(os.path.dirname(__file__), "..", "data")
 _SEEN_FILE   = os.path.join(_DATA, "sec_13dg_seen.json")   # 已推送的申报，防重复
+_NAMES_FILE  = os.path.join(_DATA, "sec_ticker_names.json") # ticker→公司全名（7天缓存）
 
 _EDGAR_HEADERS = {
     "User-Agent": "stock-master-personal 1758162368szw@gmail.com",
@@ -64,19 +66,69 @@ def _save_seen(seen: set):
                   f, ensure_ascii=False, indent=2)
 
 
+def _ticker_name_map() -> dict:
+    """从 EDGAR company_tickers.json 构建 ticker→公司全名 映射（7天缓存）。"""
+    if os.path.exists(_NAMES_FILE):
+        if time.time() - os.path.getmtime(_NAMES_FILE) < 7 * 86400:
+            try:
+                with open(_NAMES_FILE) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    try:
+        r = requests.get("https://www.sec.gov/files/company_tickers.json",
+                         headers=_EDGAR_HEADERS, timeout=20)
+        r.raise_for_status()
+        mapping = {v["ticker"].upper(): v.get("title", "").upper()
+                   for v in r.json().values()}
+        os.makedirs(_DATA, exist_ok=True)
+        with open(_NAMES_FILE, "w") as f:
+            json.dump(mapping, f)
+        return mapping
+    except Exception:
+        return {}
+
+
+_COMPANY_STOP_WORDS = {"INC", "CORP", "LLC", "LTD", "CO", "THE", "GROUP",
+                       "HOLDINGS", "HOLDING", "PLC", "NV", "SA", "AG", "SE"}
+
+
+def _company_key(name: str) -> str:
+    """提取公司名核心词（去后缀/停用词），用于模糊匹配。"""
+    words = name.upper().rstrip(".").split()
+    key_words = [w for w in words if w not in _COMPANY_STOP_WORDS and len(w) > 2]
+    return " ".join(key_words[:2])   # 取前2个关键词
+
+
+def _matches_watchlist(entity_name: str, watchlist: list[str]) -> bool:
+    """检查 entity_name（EDGAR 申报中的受益公司名）是否对应 watchlist 中的某只股票。"""
+    name_map = _ticker_name_map()
+    entity_key = _company_key(entity_name)
+    if not entity_key:
+        return False
+    for ticker in watchlist:
+        company = name_map.get(ticker.upper(), "")
+        if not company:
+            continue
+        ck = _company_key(company)
+        if ck and (ck in entity_key or entity_key in ck):
+            return True
+    return False
+
+
 def _search_edgar(form_type: str, days: int = LOOKBACK_DAYS) -> list[dict]:
     """
     用 EDGAR EFTS API 检索最近申报。
 
-    返回：[{accession, ticker, filer_name, file_date, form_type, entity_name}]
+    返回：[{accession, entity_name, file_date, form_type}]
     """
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    # 只用 forms= 过滤表单类型，不用 q= 全文搜索（会匹配到无关文档）
     url = (
         "https://efts.sec.gov/LATEST/search-index"
-        f"?q=%22{form_type.replace(' ', '+').replace('/', '%2F')}%22"
-        f"&forms={form_type.replace(' ', '+').replace('/', '%2F')}"
+        f"?forms={quote(form_type, safe='')}"
         f"&dateRange=custom&startdt={cutoff}"
-        "&_source=period_of_report,entity_name,file_date,period_of_report,accession_no"
+        "&_source=entity_name,file_date,accession_no"
     )
     try:
         r = requests.get(url, headers=_EDGAR_HEADERS, timeout=20)
@@ -147,12 +199,9 @@ def check_new_13dg(watchlist: list[str] | None = None) -> list[dict]:
             if acc in seen:
                 continue
 
-            entity = r["entity_name"].upper()
-            # watchlist 过滤：检查实体名是否包含任何 watchlist ticker
-            if watchlist:
-                matched = any(t.upper() in entity for t in watchlist)
-                if not matched:
-                    continue
+            # watchlist 过滤：用公司全名匹配（ticker与公司名无子串关系，不能直接比）
+            if watchlist and not _matches_watchlist(r["entity_name"], watchlist):
+                continue
 
             new_ones.append(r)
             seen.add(acc)

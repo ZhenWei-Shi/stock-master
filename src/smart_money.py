@@ -156,12 +156,13 @@ def detect_unusual_options(ticker: str) -> dict:
 
                         # ── Bid/Ask 方向推断（Lee-Ready 规则简化版）──
                         spread = ask - bid
-                        if spread > 0 and last > 0:
+                        # lastPrice 必须落在合理区间内才可信（陈旧数据会漂移到 bid/ask 之外）
+                        if spread > 0 and last > 0 and bid * 0.8 <= last <= ask * 1.5:
                             proximity = (last - bid) / spread   # 0=bid, 1=ask
-                            # 转换为 [-1, +1] 的方向权重
-                            direction_weight = (proximity - 0.5) * 2
+                            # 钳位到 [-1, +1]，防止陈旧 lastPrice 产生无界权重
+                            direction_weight = max(-1.0, min(1.0, (proximity - 0.5) * 2))
                         else:
-                            direction_weight = 0.0   # 无法判断，中性
+                            direction_weight = 0.0   # 数据陈旧或无价差，无法判断方向
 
                         net_flow = vol * direction_weight   # 正=主动买入
 

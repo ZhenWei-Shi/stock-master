@@ -249,7 +249,7 @@ def handle_command(text: str):
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
             "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
             "/13dg                      SEC 13D/G机构大仓新申报（近3天）\n"
-            "/logexec NVDA 143.50       记录实际成交价（执行追踪）\n"
+            "/logexec NVDA 142.00 143.50  记录信号价→实际成交价（执行追踪）\n"
             "/logskip NVDA              记录跳过（超出限价）\n"
             "/execreport                执行偏差统计报告\n"
             "/status                    运行状态\n"
@@ -424,29 +424,36 @@ def handle_command(text: str):
 
     elif cmd in ("/logexec", "/logskip"):
         # 执行偏差日志（P0-C：关闭信号→实际执行的黑洞监控）
-        # 用法：/logexec NVDA 143.50    或    /logskip NVDA
+        # 用法：/logexec NVDA 142.00 143.50   或   /logskip NVDA [信号价]
         from src.paper_trading import log_execution
         ticker_arg = parts[1].upper() if len(parts) > 1 else ""
         if not ticker_arg:
-            send("用法：/logexec NVDA 143.50  或  /logskip NVDA")
+            send("用法：/logexec NVDA 142.00 143.50  或  /logskip NVDA 142.00")
             return
         if cmd == "/logexec":
-            if len(parts) < 3:
-                send("用法：/logexec NVDA 143.50（需填写实际成交价）")
+            if len(parts) < 4:
+                send("用法：/logexec NVDA <信号价> <实际成交价>\n例：/logexec NVDA 142.00 143.50")
                 return
             try:
-                actual_px = float(parts[2])
-                r = log_execution(ticker_arg, signal_price=0, actual_price=actual_px,
+                signal_px = float(parts[2])
+                actual_px = float(parts[3])
+                r = log_execution(ticker_arg, signal_price=signal_px, actual_price=actual_px,
                                   signal_time="", action="entered",
                                   note="Telegram手动记录")
-                send(f"✅ 已记录 {ticker_arg} 执行价 ${actual_px:.2f}")
+                dev = r.get("deviation_pct", 0)
+                send(f"✅ 已记录 {ticker_arg}：信号${signal_px:.2f}→实际${actual_px:.2f}，"
+                     f"偏差{dev:+.2f}%")
             except ValueError:
-                send(f"价格格式错误：{parts[2]}")
+                send(f"价格格式错误，用法：/logexec NVDA 142.00 143.50")
         else:  # /logskip
-            log_execution(ticker_arg, signal_price=0, actual_price=0,
+            try:
+                signal_px = float(parts[2]) if len(parts) >= 3 else 0.0
+            except ValueError:
+                signal_px = 0.0
+            log_execution(ticker_arg, signal_price=signal_px, actual_price=0,
                           signal_time="", action="skipped",
                           note="超出限价，Telegram手动记录")
-            send(f"⏭ 已记录 {ticker_arg} 跳过（信号超出限价）")
+            send(f"⏭ 已记录 {ticker_arg} 跳过（信号超出限价{f'，信号价${signal_px:.2f}' if signal_px else ''}）")
 
     elif cmd == "/execreport":
         from src.paper_trading import execution_deviation_report
