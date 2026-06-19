@@ -330,6 +330,15 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                         f"止损：${stop:.2f} | 目标：${target:.2f}\n"
                         f"R:R = 1:{rr:.1f}\n"
                     )
+                # 附加长持评分（非阻塞，失败不影响主信号）
+                try:
+                    from src.long_hold import long_hold_eval, format_longhold_inline
+                    lh = long_hold_eval(sig["ticker"])
+                    lh_line = format_longhold_inline(lh)
+                    if lh_line:
+                        msg_sig += lh_line + "\n"
+                except Exception:
+                    pass
                 msg_sig += f"详情：/api/debate-with-cold?ticker={sig['ticker']}&account={account:.0f}"
                 send_telegram(msg_sig)
         else:

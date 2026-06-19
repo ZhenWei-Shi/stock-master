@@ -245,9 +245,10 @@ def handle_command(text: str):
             "/scan             立即扫描（含板块轮动扩充）\n"
             "/sector           板块轮动排名（强制刷新）\n"
             "/hotlist          查看当日动态扫描列表\n"
-            "/gex [NVDA TSLA]  GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
-            "/status           运行状态\n"
-            "/help             显示帮助"
+            "/gex [NVDA TSLA]      GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
+            "/longhold NVDA AAPL   长期持仓质量评估（1年以上视角）\n"
+            "/status               运行状态\n"
+            "/help                 显示帮助"
         )
 
     elif cmd == "/list":
@@ -361,6 +362,22 @@ def handle_command(text: str):
             except Exception as e:
                 send(f"GEX 计算失败：{e}")
         threading.Thread(target=_do_gex, daemon=True).start()
+
+    elif cmd == "/longhold":
+        # /longhold 或 /longhold NVDA AAPL MSFT
+        custom = [p.upper() for p in parts[1:] if p.isalpha()]
+        if not custom:
+            wl = read_watchlist()
+            custom = wl[:8] if wl else ["NVDA", "AAPL", "MSFT", "GOOGL"]
+        send(f"⏳ 正在评估 {', '.join(custom)} 的长期持仓质量（每只约10-15秒）...")
+        def _do_longhold():
+            try:
+                from src.long_hold import long_hold_scan, format_longhold_telegram
+                results = long_hold_scan(custom)
+                send(format_longhold_telegram(results))
+            except Exception as e:
+                send(f"长持评估失败：{e}")
+        threading.Thread(target=_do_longhold, daemon=True).start()
 
     elif cmd == "/status":
         wl = read_watchlist()
