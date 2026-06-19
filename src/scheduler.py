@@ -419,28 +419,69 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         return load_watchlist(",".join(watchlist))
 
     def _macro_refresh():
-        """每日 09:00 晨报：宏观快照 + 板块轮动 + 动态 watchlist 预告。"""
-        # 1. 宏观快照
-        try:
-            from src.macro_filter import full_macro_report, format_macro_telegram
-            report = full_macro_report(_latest_watchlist())
-            if use_telegram:
-                send_telegram(format_macro_telegram(report))
-            print(f"[Macro] 宏观快照已刷新：{report.get('master_action', '')}")
-        except Exception as e:
-            print(f"[Macro] 宏观刷新失败：{e}")
+        """每日 09:00 晨报：宏观快照 + 板块轮动 + 动态 watchlist 预告。
+        任务1（宏观）/ 任务2（板块）/ 任务4（13D/G）并行下载，
+        任务3（动态watchlist）等待任务2板块缓存就绪后串行执行。
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # 2. 板块轮动报告（强制刷新缓存，用最新开盘前数据）
-        try:
-            from src.sector_rotation import fetch_sector_rankings, format_telegram_report
-            fetch_sector_rankings(force=True)
-            if use_telegram:
-                send_telegram(format_telegram_report())
-            print("[Sector] 板块轮动已刷新")
-        except Exception as e:
-            print(f"[Sector] 板块轮动刷新失败：{e}")
+        macro_msgs  = []   # 收集各任务的 Telegram 消息，按顺序统一发送
+        sector_ok   = False
 
-        # 3. 动态 watchlist 预告（告知今日扫描哪些股票）
+        def _task_macro():
+            try:
+                from src.macro_filter import full_macro_report, format_macro_telegram
+                report = full_macro_report(_latest_watchlist())
+                print(f"[Macro] 宏观快照已刷新：{report.get('master_action', '')}")
+                return ("macro", format_macro_telegram(report))
+            except Exception as e:
+                print(f"[Macro] 宏观刷新失败：{e}")
+                return ("macro", None)
+
+        def _task_sector():
+            try:
+                from src.sector_rotation import fetch_sector_rankings, format_telegram_report
+                fetch_sector_rankings(force=True)
+                print("[Sector] 板块轮动已刷新")
+                return ("sector", format_telegram_report())
+            except Exception as e:
+                print(f"[Sector] 板块轮动刷新失败：{e}")
+                return ("sector", None)
+
+        def _task_13dg():
+            try:
+                from src.sec_13dg_monitor import run_13dg_monitor
+                wl  = _latest_watchlist()
+                r13 = run_13dg_monitor(watchlist=wl,
+                                       send_fn=send_telegram if use_telegram else None)
+                if r13["new_count"]:
+                    print(f"[13D/G] 推送 {r13['new_count']} 条新申报：{r13['pushed']}")
+                else:
+                    print("[13D/G] 无新机构大仓申报")
+                return ("13dg", None)   # 13D/G 内部已自行推送
+            except Exception as e:
+                print(f"[13D/G] 监控失败：{e}")
+                return ("13dg", None)
+
+        # ── 任务1 / 2 / 4 并行执行 ─────────────────────────────
+        results = {}
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            futures = {
+                ex.submit(_task_macro):  "macro",
+                ex.submit(_task_sector): "sector",
+                ex.submit(_task_13dg):   "13dg",
+            }
+            for fut in as_completed(futures):
+                kind, msg = fut.result()
+                results[kind] = msg
+
+        # ── 按顺序发送 Telegram 消息（宏观→板块）──────────────
+        if use_telegram:
+            for key in ("macro", "sector"):
+                if results.get(key):
+                    send_telegram(results[key])
+
+        # ── 任务3：动态 watchlist（依赖任务2的板块缓存）────────
         try:
             from src.trading_agent import build_dynamic_watchlist
             core_wl = _latest_watchlist()
@@ -462,19 +503,6 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             print(f"[Sector] 动态 watchlist：{dyn['total']} 只（{dyn.get('note','')}）")
         except Exception as e:
             print(f"[Sector] 动态 watchlist 构建失败：{e}")
-
-        # 4. SEC 13D/G 机构大仓监控（晨报时查一次）
-        try:
-            from src.sec_13dg_monitor import run_13dg_monitor
-            wl = _latest_watchlist()
-            r13 = run_13dg_monitor(watchlist=wl,
-                                   send_fn=send_telegram if use_telegram else None)
-            if r13["new_count"]:
-                print(f"[13D/G] 推送 {r13['new_count']} 条新申报：{r13['pushed']}")
-            else:
-                print("[13D/G] 无新机构大仓申报")
-        except Exception as e:
-            print(f"[13D/G] 监控失败：{e}")
 
     def _afternoon_13dg():
         """14:00 午后再查一次13D/G（大陆时间07:00前提交的申报可能当天才出现）。"""
@@ -534,7 +562,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             if hhmm == (0, 1):
                 executed_today.clear()
 
-            time.sleep(55)  # 每55秒检查一次（避免同分钟重复触发）
+            time.sleep(30)  # 每30秒检查一次（减少任务触发延迟）
 
         except KeyboardInterrupt:
             print("\n[Scheduler] 已停止")

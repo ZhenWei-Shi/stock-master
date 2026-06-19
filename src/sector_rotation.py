@@ -573,5 +573,15 @@ def format_telegram_report() -> str:
         accel_names = "、".join(r["name"] for r in rpt["accelerating"])
         lines.append(f"\n⚡ <b>加速流入</b>（1M RS > 3M RS）：{accel_names}")
 
+    # 14板块完整排名（紧凑格式）
+    full = rpt.get("full_rankings", [])
+    if full:
+        lines.append(f"\n📋 <b>完整排名（{len(full)}板块）</b>  1M超额 vs SPY")
+        for r in full:
+            accel_mark = "↑" if r.get("accel") else " "
+            lines.append(
+                f"  [{r['rank']:>2}] {r['name']:<10}  {r['rs_1m']:+.1f}%{accel_mark}"
+            )
+
     lines.append(f"\n💡 {rpt.get('rotation_note', '')}")
     return "\n".join(lines)

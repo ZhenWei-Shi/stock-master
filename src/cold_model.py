@@ -484,9 +484,21 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # 所有 gate 写完后再算分，score 能完整看到全部门关状态（含 pdt_rule/earnings_quality）
     score = _calc_score(gates, vix_val, aggressive_mode)
 
-    # ── 激进模式额外加分项 ────────────────────────────────
+    # ── 板块顺风加分（双模式通用）────────────────────────────
+    # 从 _calc_score 移出，使加分能越过 100 分限制被 adjusted_score 正确消化
     bonus = 0
     bonus_notes = []
+    sg_meta = gates.get("_sector_meta", {})
+    sg_pass = gates.get("sector_rotation", {}).get("pass", True)
+    sg_rank = sg_meta.get("rank")
+    if sg_pass is True and isinstance(sg_rank, int) and sg_rank <= 3:
+        bonus += SECTOR_TOP_BONUS
+        bonus_notes.append(f"顺风板块前{sg_rank}名（+{SECTOR_TOP_BONUS}）")
+        if sg_meta.get("accel"):
+            bonus += SECTOR_ACCEL_BONUS
+            bonus_notes.append(f"板块资金加速流入（+{SECTOR_ACCEL_BONUS}）")
+
+    # ── 激进模式额外加分项 ────────────────────────────────
     if aggressive_mode:
         # RS > 85 加分（系统已在九关里检测，这里用简化指标）
         try:
@@ -658,11 +670,20 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         pos_size       = shares * price
         actual_risk    = shares * stop_d
 
-        # 期望值计算（使用配置常量，避免硬编码）
-        win_rate  = EV_WIN_RATE
-        rr        = EV_RR_RATIO
-        ev        = win_rate * (rr * actual_risk) - (1 - win_rate) * actual_risk
-        ev_pct    = ev / portfolio * 100
+        # 期望值计算：优先用实测胜率（≥15笔），否则用假设常量
+        rr = EV_RR_RATIO
+        try:
+            from .paper_trading import performance_report as _pr_fn
+            _pr  = _pr_fn()
+            _wr  = _pr.get("kelly", {}).get("actual_win_rate")
+            _n   = _pr.get("summary", {}).get("total_trades", 0)
+            win_rate = (_wr / 100) if (_wr is not None and _n >= 15) else EV_WIN_RATE
+            _ev_src  = f"实测胜率{_wr:.0f}%/{_n}笔" if (_wr is not None and _n >= 15) else f"假设胜率{EV_WIN_RATE*100:.0f}%（样本<15笔）"
+        except Exception:
+            win_rate = EV_WIN_RATE
+            _ev_src  = f"假设胜率{EV_WIN_RATE*100:.0f}%"
+        ev     = win_rate * (rr * actual_risk) - (1 - win_rate) * actual_risk
+        ev_pct = ev / portfolio * 100
 
         stop_price   = round(price - stop_d if direction == "LONG" else price + stop_d, 2)
         target1      = round(price + atr_val * 2   if direction == "LONG" else price - atr_val * 2,   2)
@@ -850,17 +871,10 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
     elif vix > 28:
         base -= (5 if aggressive_mode else 10)
 
-    # 板块轮动背景（非阻断，加减分）
-    # rank/accel/heat 存储在 _sector_meta 避免污染 sector_rotation gate 结构
-    sg      = gates.get("sector_rotation", {})
-    sg_meta = gates.get("_sector_meta", {})
-    sg_pass = sg.get("pass", True)
-    rank    = sg_meta.get("rank")
+    # 板块逆风扣分（warn = 逆风板块，非阻断）
+    # 正向加分移到外层 bonus 块，避免与 min(100) 上限冲突导致溢出截断
+    sg_pass = gates.get("sector_rotation", {}).get("pass", True)
     if sg_pass == "warn":
-        base -= 8    # 逆风板块扣分
-    elif sg_pass is True and isinstance(rank, int) and rank <= 3:
-        base += SECTOR_TOP_BONUS    # 顺风板块加分
-        if sg_meta.get("accel"):
-            base += SECTOR_ACCEL_BONUS  # 加速流入额外加分
+        base -= 8
 
     return max(0, min(100, base))

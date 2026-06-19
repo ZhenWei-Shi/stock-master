@@ -392,11 +392,12 @@ def long_hold_eval(ticker: str) -> dict:
     t_score, t_pos, t_neg = _score_trend(ticker, info)
     v_score, v_pos, v_neg = _score_valuation(info)
 
-    total = g_score + b_score + t_score + v_score
+    total = min(100, g_score + b_score + t_score + v_score)   # 各维度之和理论最高105，截断到100
     positives = g_pos + b_pos + t_pos + v_pos
     negatives = g_neg + b_neg + t_neg + v_neg
 
     # 内部人交易信号（SEC Form 4，独立来源，不替代四维得分，作为 +/- 修正）
+    # 基本面<60时正向delta上限收窄到+4：避免基本面差票被内部人买入信号拉至虚假HOLD
     insider_data = None
     try:
         from .insider_tracker import insider_summary
@@ -404,6 +405,8 @@ def long_hold_eval(ticker: str) -> dict:
         if ins.get("ok"):
             insider_data = ins
             delta = ins.get("score_delta", 0)
+            if delta > 0 and total < 60:
+                delta = min(delta, 4)
             total = min(100, total + delta)
             if delta > 0:
                 positives.append(ins["note"])

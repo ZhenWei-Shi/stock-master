@@ -624,31 +624,272 @@ def print_report(r: dict):
 
 
 # ─────────────────────────────────────────────────────────────
+# Walk-Forward 走前向测试
+# ─────────────────────────────────────────────────────────────
+
+def run_walk_forward(
+    tickers:       list,
+    start_date:    str   = "2022-01-01",
+    end_date:      str   = "2024-12-31",
+    oos_months:    int   = 6,           # 每个 OOS 窗口的月数
+    account:       float = 2_000.0,
+    risk_pct:      float = 3.0,
+    target_rr:     float = 2.0,
+    max_hold_days: int   = 15,
+    slippage_pct:  float = 0.1,
+    verbose:       bool  = False,
+) -> dict:
+    """
+    Walk-Forward 走前向验证。
+
+    将整段历史切分为多个滚动 OOS 窗口（每窗口 oos_months 个月），
+    在每个窗口上独立运行回测，汇总全部 OOS 交易结果。
+    策略参数固定（规则系统），IS 期不做参数优化，
+    Walk-Forward 目的是验证策略在不同市场环境（牛/熊/震荡）中的稳健性。
+
+    参数：
+      oos_months — 每个 OOS 窗口长度（默认6个月）
+      其他参数与 run_backtest 一致
+
+    返回：
+      per_window  — 逐窗口统计
+      combined    — 汇总 OOS 交易结果（去除窗口边界重叠问题）
+      stability   — 稳定性分析（各窗口收益的标准差/最差窗口）
+    """
+    from dateutil.relativedelta import relativedelta
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt   = datetime.strptime(end_date,   "%Y-%m-%d")
+
+    # 生成 OOS 窗口列表（步长 = oos_months，无重叠）
+    windows = []
+    w_start = start_dt
+    while w_start < end_dt:
+        w_end = min(w_start + relativedelta(months=oos_months), end_dt)
+        if (w_end - w_start).days >= 30:   # 最短30天才有意义
+            windows.append((w_start.strftime("%Y-%m-%d"),
+                            w_end.strftime("%Y-%m-%d")))
+        w_start = w_end
+
+    if len(windows) < 2:
+        return {"ok": False, "error": "日期范围太短，至少需要两个 OOS 窗口"}
+
+    print(f"[Walk-Forward] {len(windows)} 个 OOS 窗口  "
+          f"（各 {oos_months} 个月）  标的：{tickers}")
+
+    per_window   = []
+    all_trades   = []
+
+    for idx, (ws, we) in enumerate(windows, 1):
+        print(f"\n[Walk-Forward] 窗口 {idx}/{len(windows)}：{ws} → {we}")
+        r = run_backtest(
+            tickers       = tickers,
+            start_date    = ws,
+            end_date      = we,
+            account       = account,
+            risk_pct      = risk_pct,
+            target_rr     = target_rr,
+            max_hold_days = max_hold_days,
+            slippage_pct  = slippage_pct,
+            verbose       = verbose,
+        )
+
+        trades = r.get("trades", [])
+        s      = r.get("summary", {})
+        vs     = r.get("vs_benchmark", {})
+        risk   = r.get("risk", {})
+
+        window_stat = {
+            "window":          idx,
+            "start":           ws,
+            "end":             we,
+            "ok":              r.get("ok", False),
+            "error":           r.get("error") or r.get("note"),
+            "total_trades":    s.get("total_trades", 0),
+            "win_rate_pct":    s.get("win_rate_pct", 0),
+            "avg_win_pct":     s.get("avg_win_pct", 0),
+            "avg_loss_pct":    s.get("avg_loss_pct", 0),
+            "total_return_pct": s.get("total_return_pct", 0),
+            "spy_return_pct":  vs.get("spy_return_pct", 0),
+            "alpha_pct":       vs.get("alpha_pct", 0),
+            "max_drawdown_pct": risk.get("max_drawdown_pct", 0),
+            "kelly_full_pct":  risk.get("kelly_full_pct", 0),
+        }
+        per_window.append(window_stat)
+
+        # 用窗口编号标记每笔交易，方便后续分析
+        for t in trades:
+            all_trades.append({**t, "wf_window": idx, "wf_start": ws, "wf_end": we})
+
+    if not all_trades:
+        return {
+            "ok":        True,
+            "note":      "Walk-Forward 期间无任何交易信号，请检查标的或放宽参数",
+            "params":    {"tickers": tickers, "start": start_date, "end": end_date,
+                          "oos_months": oos_months},
+            "per_window": per_window,
+        }
+
+    # ── 汇总 OOS 全部交易 ──────────────────────────────────────
+    total_trades = len(all_trades)
+    wins   = [t for t in all_trades if t["result"] == "win"]
+    losses = [t for t in all_trades if t["result"] == "loss"]
+    win_rate   = len(wins) / total_trades
+    avg_win    = float(np.mean([t["pnl_pct"] for t in wins]))   if wins   else 0.0
+    avg_loss   = float(np.mean([t["pnl_pct"] for t in losses])) if losses else 0.0
+    total_pnl  = sum(t["pnl"] for t in all_trades)
+
+    rr_ratio   = abs(avg_win / avg_loss) if avg_loss != 0 else (99.9 if avg_win > 0 else 0.0)
+    kelly_f    = (win_rate - (1 - win_rate) / rr_ratio) if rr_ratio > 0 else 0.0
+
+    # 每个窗口的收益率列表（稳定性分析）
+    returns = [w["total_return_pct"] for w in per_window if w["ok"] and w["total_trades"] > 0]
+    alphas  = [w["alpha_pct"]        for w in per_window if w["ok"] and w["total_trades"] > 0]
+
+    profitable_windows = sum(1 for r in returns if r > 0)
+    beat_spy_windows   = sum(1 for a in alphas  if a > 0)
+
+    stability = {
+        "profitable_windows":    f"{profitable_windows}/{len(returns)}",
+        "beat_spy_windows":      f"{beat_spy_windows}/{len(alphas)}",
+        "return_std_pct":        round(float(np.std(returns)), 2)  if returns else 0,
+        "worst_window_return":   round(min(returns), 2)            if returns else 0,
+        "best_window_return":    round(max(returns), 2)            if returns else 0,
+        "avg_window_return":     round(float(np.mean(returns)), 2) if returns else 0,
+        "avg_window_alpha":      round(float(np.mean(alphas)), 2)  if alphas  else 0,
+        "consistency_note": (
+            "策略稳健：大多数窗口盈利且跑赢基准" if profitable_windows >= len(returns) * 0.6
+            else "策略不稳定：不同市场环境表现差异过大，需进一步优化"
+        ),
+    }
+
+    combined = {
+        "total_trades":     total_trades,
+        "wins":             len(wins),
+        "losses":           len(losses),
+        "win_rate_pct":     round(win_rate * 100, 1),
+        "avg_win_pct":      round(avg_win, 2),
+        "avg_loss_pct":     round(avg_loss, 2),
+        "risk_reward":      round(rr_ratio, 2),
+        "total_pnl_usd":    round(total_pnl, 2),
+        "kelly_full_pct":   round(kelly_f * 100, 1),
+        "kelly_half_pct":   round(kelly_f * 50,  1),
+        "negative_edge":    kelly_f < 0,
+    }
+
+    result = {
+        "ok":          True,
+        "params": {
+            "tickers":       tickers,
+            "start":         start_date,
+            "end":           end_date,
+            "oos_months":    oos_months,
+            "num_windows":   len(windows),
+            "account":       account,
+            "risk_pct":      risk_pct,
+            "target_rr":     target_rr,
+        },
+        "per_window":  per_window,
+        "combined":    combined,
+        "stability":   stability,
+        "trades":      all_trades,
+    }
+
+    out_path = os.path.join(_DATA, "walkforward_result.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2, default=str)
+    print(f"\n[Walk-Forward] 结果已保存到 {out_path}")
+
+    return result
+
+
+def print_wf_report(r: dict):
+    """Walk-Forward 结果格式化输出（终端）。"""
+    if not r.get("ok"):
+        print(f"Walk-Forward 失败：{r.get('error', r.get('note'))}")
+        return
+
+    p  = r["params"]
+    s  = r["stability"]
+    c  = r["combined"]
+
+    print("\n" + "="*60)
+    print("  Walk-Forward 走前向验证报告")
+    print("="*60)
+    print(f"  标的：{', '.join(p['tickers'])}")
+    print(f"  验证周期：{p['start']} → {p['end']}（{p['num_windows']} 个窗口）")
+    print("-"*60)
+    print(f"  汇总 OOS 交易：{c['total_trades']}笔  "
+          f"盈{c['wins']}亏{c['losses']}  胜率{c['win_rate_pct']}%")
+    print(f"  平均盈利：+{c['avg_win_pct']}%   平均亏损：{c['avg_loss_pct']}%")
+    print(f"  盈亏比：{c['risk_reward']:.2f}x")
+    kelly_note = ("🚨 负期望，策略需优化" if c["negative_edge"]
+                  else f"半Kelly建议：{c['kelly_half_pct']}%")
+    print(f"  Kelly：{kelly_note}")
+    print("-"*60)
+    print(f"  各窗口收益均值：{s['avg_window_return']:+.2f}%")
+    print(f"  各窗口超额均值：{s['avg_window_alpha']:+.2f}%")
+    print(f"  最好/最差窗口：{s['best_window_return']:+.2f}% / {s['worst_window_return']:+.2f}%")
+    print(f"  收益标准差：{s['return_std_pct']:.2f}%（越低越稳定）")
+    print(f"  盈利窗口：{s['profitable_windows']}   跑赢SPY窗口：{s['beat_spy_windows']}")
+    print(f"\n  ⚖️  {s['consistency_note']}")
+    print("-"*60)
+    print("  逐窗口明细：")
+    for w in r.get("per_window", []):
+        status = ("无信号" if w["total_trades"] == 0
+                  else f"胜率{w['win_rate_pct']}%  收益{w['total_return_pct']:+.2f}%  "
+                       f"Alpha{w['alpha_pct']:+.2f}%  MDD{w['max_drawdown_pct']:.2f}%")
+        print(f"    [{w['window']}] {w['start']}→{w['end']}  {w['total_trades']}笔  {status}")
+    print("="*60 + "\n")
+
+    if c["total_trades"] < 30:
+        print("⚠️  总样本量<30笔，结论参考意义有限。建议扩大日期范围或增加标的。")
+
+
+# ─────────────────────────────────────────────────────────────
 # CLI 直接运行
 # ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse
 
-    ap = argparse.ArgumentParser(description="历史回测引擎")
-    ap.add_argument("--tickers",  default="NVDA,AMD,TSLA,AAPL,MSFT",
+    ap = argparse.ArgumentParser(description="历史回测引擎 / Walk-Forward 验证")
+    ap.add_argument("--tickers",    default="NVDA,AMD,TSLA,AAPL,MSFT",
                     help="股票代码，逗号分隔")
-    ap.add_argument("--start",    default="2023-01-01", help="开始日期 YYYY-MM-DD")
-    ap.add_argument("--end",      default="2024-12-31", help="结束日期 YYYY-MM-DD")
-    ap.add_argument("--account",  type=float, default=2000.0, help="初始资金")
-    ap.add_argument("--risk",     type=float, default=3.0,    help="每笔风险%")
-    ap.add_argument("--rr",       type=float, default=2.0,    help="目标盈亏比")
-    ap.add_argument("--verbose",  action="store_true",        help="打印每笔交易")
+    ap.add_argument("--start",      default="2023-01-01", help="开始日期 YYYY-MM-DD")
+    ap.add_argument("--end",        default="2024-12-31", help="结束日期 YYYY-MM-DD")
+    ap.add_argument("--account",    type=float, default=2000.0, help="初始资金")
+    ap.add_argument("--risk",       type=float, default=3.0,    help="每笔风险%")
+    ap.add_argument("--rr",         type=float, default=2.0,    help="目标盈亏比")
+    ap.add_argument("--verbose",    action="store_true",        help="打印每笔交易")
+    ap.add_argument("--wf",         action="store_true",
+                    help="启用 Walk-Forward 验证（替代单段回测）")
+    ap.add_argument("--wf-months",  type=int, default=6,
+                    help="Walk-Forward 每个 OOS 窗口月数（默认6）")
     args = ap.parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    result  = run_backtest(
-        tickers    = tickers,
-        start_date = args.start,
-        end_date   = args.end,
-        account    = args.account,
-        risk_pct   = args.risk,
-        target_rr  = args.rr,
-        verbose    = args.verbose,
-    )
-    print_report(result)
+
+    if args.wf:
+        result = run_walk_forward(
+            tickers       = tickers,
+            start_date    = args.start,
+            end_date      = args.end,
+            oos_months    = args.wf_months,
+            account       = args.account,
+            risk_pct      = args.risk,
+            target_rr     = args.rr,
+            verbose       = args.verbose,
+        )
+        print_wf_report(result)
+    else:
+        result = run_backtest(
+            tickers    = tickers,
+            start_date = args.start,
+            end_date   = args.end,
+            account    = args.account,
+            risk_pct   = args.risk,
+            target_rr  = args.rr,
+            verbose    = args.verbose,
+        )
+        print_report(result)

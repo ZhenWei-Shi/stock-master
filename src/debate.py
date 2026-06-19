@@ -53,9 +53,15 @@ def generate_trade_debate(ticker: str, direction: str = "LONG",
     close    = hist["Close"]
     volume   = hist["Volume"]
 
-    bull_args = _bull_analyst(info, hist, close, volume, price, direction, cold_result)
+    # 预取一次 SPY，供 _bull_analyst / _risk_officer 共用，避免 56 只股票 × 2 次重复下载
+    try:
+        spy_shared = yf.Ticker("SPY").history(period="3mo")
+    except Exception:
+        spy_shared = None
+
+    bull_args = _bull_analyst(info, hist, close, volume, price, direction, cold_result, spy_hist=spy_shared)
     bear_args = _bear_analyst(info, hist, close, volume, price, direction, cold_result)
-    risk_rep  = _risk_officer(info, hist, close, price, account_value, cold_result)
+    risk_rep  = _risk_officer(info, hist, close, price, account_value, cold_result, spy_hist=spy_shared)
     verdict   = _arbitrator(bull_args, bear_args, risk_rep, direction)
 
     return {
@@ -78,7 +84,7 @@ def generate_trade_debate(ticker: str, direction: str = "LONG",
 # 看多分析师
 # ─────────────────────────────────────────────────────────────
 
-def _bull_analyst(info, hist, close, volume, price, direction, cold_result) -> dict:
+def _bull_analyst(info, hist, close, volume, price, direction, cold_result, spy_hist=None) -> dict:
     args      = []
     score     = 0
     max_score = 0
@@ -117,7 +123,8 @@ def _bull_analyst(info, hist, close, volume, price, direction, cold_result) -> d
     # ── 2. 相对强度 ───────────────────────────────────────
     max_score += 20
     try:
-        spy_hist = yf.Ticker("SPY").history(period="3mo")
+        if spy_hist is None:
+            spy_hist = yf.Ticker("SPY").history(period="3mo")
         if len(close) >= 63 and len(spy_hist) >= 63:
             stk_ret = float((close.iloc[-1] - close.iloc[-63]) / close.iloc[-63] * 100)
             spy_ret = float((spy_hist["Close"].iloc[-1] - spy_hist["Close"].iloc[-63])
@@ -196,20 +203,42 @@ def _bull_analyst(info, hist, close, volume, price, direction, cold_result) -> d
     add("基本面质量", "；".join(fund_details) if fund_details else "无基本面数据",
         20, fund_score)
 
-    # ── 5. 技术形态（来自cold_result或快速计算）─────────
+    # ── 5. 技术门限结构（突破位置 / RSI区间 / ATR止损）─────────
+    # 使用 cold_result 的具体门输出，而非聚合分——避免"冷静模型说好 → 因此好"的循环推理
     max_score += 15
     pattern_score = 0
-    pattern_detail = "需运行/api/patterns获取VCP/杯柄形态数据"
+    pattern_details = []
     if cold_result:
         gates = cold_result.get("gates", {})
-        if cold_result.get("score", 0) >= 70:
-            pattern_score = 12
-            pattern_detail = f"冷静模型评分 {cold_result['score']}，技术结构良好"
-        elif cold_result.get("score", 0) >= 55:
-            pattern_score = 7
-            pattern_detail = f"冷静模型评分 {cold_result['score']}，技术结构尚可"
+
+        # 价格位置：near_high 门——突破前沿是 VCP/杯柄的核心要素
+        near_g = gates.get("near_high", {})
+        if near_g.get("pass") is True:
+            pattern_score += 6
+            pattern_details.append(near_g.get("note", "近52周高，突破结构良好"))
+        elif near_g.get("pass") == "warn":
+            pattern_score += 3
+            pattern_details.append(near_g.get("note", "接近突破区，位置边缘"))
+
+        # RSI 区间：cold_model 独立计算，与 section 1 的均线信号正交
+        rsi_g = gates.get("rsi", {})
+        if rsi_g.get("pass") is True:
+            pattern_score += 5
+            pattern_details.append(rsi_g.get("note", "RSI区间合理"))
+        elif rsi_g.get("pass") is False:
+            pattern_details.append(f"⚠ {rsi_g.get('note', 'RSI不适合做多')}")
+
+        # ATR止损结构：合理止损意味着入场点有可测量的支撑
+        stop_g = gates.get("stop_distance", {})
+        if stop_g.get("pass") is True:
+            pattern_score += 4
+            pattern_details.append(stop_g.get("note", "止损结构合理"))
+        elif stop_g.get("pass") is False:
+            pattern_details.append(f"⚠ {stop_g.get('note', '止损结构异常')}")
+
+    pattern_detail = "；".join(pattern_details) if pattern_details else "需运行/scan获取技术门限数据"
     score += pattern_score
-    add("技术形态与冷静模型", pattern_detail, 15, pattern_score)
+    add("技术门限结构（突破位置/RSI/ATR）", pattern_detail, 15, pattern_score)
 
     bull_score_pct = round(score / max_score * 100) if max_score > 0 else 0
     return {
@@ -338,7 +367,7 @@ def _bear_analyst(info, hist, close, volume, price, direction, cold_result) -> d
 # 风险评估官
 # ─────────────────────────────────────────────────────────────
 
-def _risk_officer(info, hist, close, price, account_value, cold_result) -> dict:
+def _risk_officer(info, hist, close, price, account_value, cold_result, spy_hist=None) -> dict:
     close_arr = close.values
     # 历史波动率（年化）
     if len(close_arr) >= 20:
@@ -349,7 +378,8 @@ def _risk_officer(info, hist, close, price, account_value, cold_result) -> dict:
 
     # Beta（简化：vs SPY 20日相关）
     try:
-        spy_hist  = yf.Ticker("SPY").history(period="3mo")
+        if spy_hist is None:
+            spy_hist = yf.Ticker("SPY").history(period="3mo")
         spy_close = spy_hist["Close"].values
         n         = min(len(close_arr), len(spy_close)) - 1
         stk_r     = np.diff(close_arr[-n-1:]) / close_arr[-n-1:-1]

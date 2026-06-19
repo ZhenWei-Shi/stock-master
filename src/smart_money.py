@@ -797,8 +797,8 @@ def format_smart_money_telegram(result: dict) -> str:
     # UOA
     uoa = d.get("unusual_options", {})
     if uoa.get("ok") and uoa.get("bias") != "neutral":
-        lines.append(f"\n📈 <b>期权异常</b>：{uoa['bias_label']}")
-        lines.append(f"  C/P比：{uoa['call_put_ratio']}  信号强度：{uoa['signal_strength']}")
+        lines.append(f"\n📈 <b>期权异常</b>：{uoa.get('bias', 'neutral')}")
+        lines.append(f"  C/P比：{uoa.get('call_put_ratio', '—')}  信号强度：{uoa.get('signal_strength', '—')}")
 
     # 空头挤压
     sqz = d.get("short_squeeze", {})

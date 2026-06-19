@@ -184,7 +184,7 @@ CHAINS = {
                 "layer": 4,
                 "name": "给药装置/并发症管理",
                 "desc": "自动注射笔、血糖仪、心血管监测（GLP-1患者需要）",
-                "tickers": ["DXCM", "PODD", "NTRA", "ITGR"],
+                "tickers": ["DXCM", "PODD", "BDX", "ITGR"],  # NTRA是产前基因检测非给药装置，换BDX(Becton Dickinson-注射笔/预填充注射器)
             },
             {
                 "layer": 3,
@@ -196,13 +196,13 @@ CHAINS = {
                 "layer": 2,
                 "name": "生物工具/API化学合成",
                 "desc": "多肽合成试剂、色谱纯化设备、酶工程",
-                "tickers": ["TMO", "BRKR", "AMGN"],
+                "tickers": ["TMO", "BRKR", "WAT"],  # AMGN是生物制药公司非工具商，换WAT(Waters Corp-HPLC/质谱仪，GLP-1多肽纯化核心设备)
             },
             {
                 "layer": 1,
                 "name": "基因/蛋白质工具",
                 "desc": "靶点发现、基因组学、蛋白质结构研究工具",
-                "tickers": ["ILMN", "A", "REGN"],
+                "tickers": ["ILMN", "A", "QGEN"],  # REGN是药企非工具商，换QGEN(Qiagen-分子诊断/基因组样本制备工具)
             },
         ]
     },
@@ -284,7 +284,8 @@ CHAINS = {
                 "layer": 4,
                 "name": "计算机视觉/传感器",
                 "desc": "机器视觉、激光雷达、工业相机——机器人的「眼睛」",
-                "tickers": ["CGNX", "KEYS", "MKSI", "AMBA"],
+                "tickers": ["CGNX", "KEYS", "TDY", "AMBA"],  # MKSI是半导体制程设备非机器视觉，换TDY(Teledyne/FLIR-工业机器视觉相机)
+
             },
             {
                 "layer": 3,

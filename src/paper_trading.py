@@ -677,11 +677,11 @@ def log_execution(ticker: str, signal_price: float, actual_price: float,
 
     action: "entered"（已执行）| "skipped"（信号超出限价，跳过）| "manual_override"（手动改单）
     """
-    if not os.path.exists(_EXEC_LOG):
-        data = {"logs": []}
-    else:
+    try:
         with open(_EXEC_LOG, "r", encoding="utf-8") as f:
             data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {"logs": []}
 
     deviation_pct = ((actual_price - signal_price) / signal_price * 100
                      if signal_price > 0 else 0)

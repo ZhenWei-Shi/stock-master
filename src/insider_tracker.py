@@ -17,6 +17,8 @@ EDGAR API 文档：https://www.sec.gov/developer
 速率限制：10请求/秒，建议 0.15s 间隔
 """
 
+from __future__ import annotations   # Python 3.9 兼容 X | Y 类型注解
+
 import os
 import json
 import time

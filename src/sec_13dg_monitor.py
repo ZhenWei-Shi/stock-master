@@ -14,13 +14,18 @@ SEC 13D/G 机构大仓监控
   - long_hold._score_insider() 也可查询此数据
 """
 
+from __future__ import annotations   # Python 3.9 兼容 X | Y 类型注解
+
 import os
 import json
 import time
+import threading
 import requests
 from datetime import datetime, timedelta
 from urllib.parse import quote
 import pytz
+
+_13DG_LOCK = threading.Lock()   # 防止 scheduler 定时任务与 Telegram /13dg 命令并发写入 seen 文件
 
 ET_TZ = pytz.timezone("America/New_York")
 
@@ -188,26 +193,27 @@ def check_new_13dg(watchlist: list[str] | None = None) -> list[dict]:
 
     返回：新申报列表，每项含格式化信息，可直接推 Telegram。
     """
-    seen     = _load_seen()
-    new_ones = []
+    with _13DG_LOCK:   # 防止 scheduler(09:00/14:00) 与 /13dg Telegram 命令并发覆盖 seen 文件
+        seen     = _load_seen()
+        new_ones = []
 
-    for form_type in FORMS_TO_WATCH:
-        time.sleep(REQUEST_DELAY)
-        results = _search_edgar(form_type, LOOKBACK_DAYS)
-        for r in results:
-            acc = r["accession"]
-            if acc in seen:
-                continue
+        for form_type in FORMS_TO_WATCH:
+            time.sleep(REQUEST_DELAY)
+            results = _search_edgar(form_type, LOOKBACK_DAYS)
+            for r in results:
+                acc = r["accession"]
+                if acc in seen:
+                    continue
 
-            # watchlist 过滤：用公司全名匹配（ticker与公司名无子串关系，不能直接比）
-            if watchlist and not _matches_watchlist(r["entity_name"], watchlist):
-                continue
+                # watchlist 过滤：用公司全名匹配（ticker与公司名无子串关系，不能直接比）
+                if watchlist and not _matches_watchlist(r["entity_name"], watchlist):
+                    continue
 
-            new_ones.append(r)
-            seen.add(acc)
+                new_ones.append(r)
+                seen.add(acc)
 
-    _save_seen(seen)
-    return new_ones
+        _save_seen(seen)
+        return new_ones
 
 
 def format_13dg_telegram(filing: dict) -> str:
