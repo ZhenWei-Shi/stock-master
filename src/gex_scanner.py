@@ -78,15 +78,20 @@ def calc_gex(ticker: str) -> dict:
         if not expiries:
             return {"ticker": ticker, "error": "无期权数据（该标的可能未上市期权）"}
 
-        now          = datetime.now()
+        # ET-aware 当前时间，用于精确计算 T（服务器为 UTC，必须明确时区）
+        now_et        = datetime.now(ET)
         gex_by_strike = {}
         total_call_oi = 0
         total_put_oi  = 0
 
         for exp in expiries[:GEX_MAX_EXPIRIES]:
             try:
-                exp_dt = datetime.strptime(exp, "%Y-%m-%d")
-                T = max((exp_dt - now).days / 365.0, 1.0 / 365)
+                # 期权在美东时间 16:00 到期；用 total_seconds 保留小时精度
+                exp_dt = ET.localize(datetime.strptime(exp, "%Y-%m-%d").replace(hour=16, minute=0))
+                secs   = (exp_dt - now_et).total_seconds()
+                if secs <= 0:
+                    continue                     # 当日已过期，跳过，避免 T→0 导致 Gamma 爆炸
+                T = max(secs / (365.25 * 86400), 1.0 / 365)
 
                 chain = tk.option_chain(exp)
 
@@ -226,9 +231,11 @@ def format_gex_telegram(results: list) -> str:
         if r.get("flip_strike"):
             lines.append(f"  正负翻转：${r['flip_strike']}")
 
+        def _oi_str(n: int) -> str:
+            return f"{n/1000:.1f}k" if n >= 1000 else str(n)
         lines.append(
             f"  P/C OI比：{r['pc_ratio']}"
-            f"（Call {r['call_oi']//1000}k / Put {r['put_oi']//1000}k）→ {r['pc_bias']}"
+            f"（Call {_oi_str(r['call_oi'])} / Put {_oi_str(r['put_oi'])}）→ {r['pc_bias']}"
         )
         lines.append("")
 

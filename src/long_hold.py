@@ -22,12 +22,16 @@
   - 股份年化稀释 > 15%（股权破坏）
 """
 
+import time
 import yfinance as yf
 import numpy as np
 from datetime import datetime
 import pytz
 
 ET = pytz.timezone("America/New_York")
+
+# SPY 周线模块级缓存（1小时有效），避免批量评估时重复下载
+_SPY_CACHE: dict = {"ts": 0, "data": None}
 
 # ══════════════════════════════════════════════════════════════
 # 评分权重常量
@@ -196,7 +200,12 @@ def _score_trend(ticker: str, info: dict) -> tuple[int, list, list]:
     try:
         tk   = yf.Ticker(ticker)
         hist = tk.history(period="2y", interval="1wk")  # 周线，2年
-        spy  = yf.Ticker("SPY").history(period="2y", interval="1wk")
+
+        # SPY 缓存：批量评估多只股票时只下载一次
+        if time.time() - _SPY_CACHE["ts"] > 3600 or _SPY_CACHE["data"] is None:
+            _SPY_CACHE["data"] = yf.Ticker("SPY").history(period="2y", interval="1wk")
+            _SPY_CACHE["ts"]   = time.time()
+        spy = _SPY_CACHE["data"]
 
         if hist.empty or spy.empty:
             neg.append("无足够历史数据评估长期趋势")
@@ -351,6 +360,15 @@ def long_hold_eval(ticker: str) -> dict:
         name = info.get("longName") or info.get("shortName") or ticker
     except Exception as e:
         return {"ticker": ticker, "error": f"数据获取失败：{e}"}
+
+    # ETF/基金 直接拒绝（无营收/FCF等字段，模型不适用）
+    if info.get("quoteType") in ("ETF", "MUTUALFUND"):
+        return {
+            "ticker":  ticker,
+            "name":    name,
+            "error":   f"{ticker} 是{info.get('quoteType','ETF')}，长持模型仅适用于个股。"
+                       f"ETF 可直接看5年年化回报：{(info.get('fiveYearAverageReturn') or 0)*100:.1f}%/年",
+        }
 
     # 硬性否决
     veto = _hard_veto(info)
