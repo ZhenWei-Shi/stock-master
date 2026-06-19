@@ -357,10 +357,21 @@ def monitor_cycle(mode: str = "paper", use_telegram: bool = True):
 
 
 def report_cycle(mode: str = "paper", use_telegram: bool = True):
-    """每日报告 + 推送。"""
+    """每日报告 + GEX 快照 + 推送。"""
     report = daily_report(mode)
     if use_telegram:
         notify_daily_report(report)
+
+    # GEX 快照（独立发送，避免日报消息过长）
+    if use_telegram:
+        try:
+            from src.gex_scanner import gex_daily_snapshot, format_gex_telegram
+            results = gex_daily_snapshot()
+            send_telegram(format_gex_telegram(results))
+            print("[GEX] 收盘快照已推送")
+        except Exception as e:
+            print(f"[GEX] 快照推送失败：{e}")
+
     return report
 
 

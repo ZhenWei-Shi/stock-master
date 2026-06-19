@@ -245,6 +245,7 @@ def handle_command(text: str):
             "/scan             立即扫描（含板块轮动扩充）\n"
             "/sector           板块轮动排名（强制刷新）\n"
             "/hotlist          查看当日动态扫描列表\n"
+            "/gex [NVDA TSLA]  GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
             "/status           运行状态\n"
             "/help             显示帮助"
         )
@@ -345,6 +346,21 @@ def handle_command(text: str):
             except Exception as e:
                 send(f"动态列表构建失败：{e}")
         threading.Thread(target=_do_hotlist, daemon=True).start()
+
+    elif cmd == "/gex":
+        # /gex 或 /gex NVDA TSLA AMD
+        custom = [p.upper() for p in parts[1:] if p.isalpha()]
+        from src.gex_scanner import GEX_DEFAULT_TICKERS
+        tickers_to_scan = custom if custom else GEX_DEFAULT_TICKERS
+        send(f"⏳ 正在计算 {', '.join(tickers_to_scan)} 的 GEX 快照（约30-60秒）...")
+        def _do_gex():
+            try:
+                from src.gex_scanner import gex_daily_snapshot, format_gex_telegram
+                results = gex_daily_snapshot(tickers_to_scan)
+                send(format_gex_telegram(results))
+            except Exception as e:
+                send(f"GEX 计算失败：{e}")
+        threading.Thread(target=_do_gex, daemon=True).start()
 
     elif cmd == "/status":
         wl = read_watchlist()
