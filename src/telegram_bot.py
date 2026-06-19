@@ -42,6 +42,7 @@ def _timed_thread(fn, timeout: int, send_fn, label: str):
 
 WATCHLIST_FILE = os.path.join(os.path.dirname(__file__), "..", "watchlist.txt")
 _last_update_id = 0
+_wl_lock = threading.Lock()  # 防止读写竞态清空watchlist
 
 
 def _token():
@@ -62,8 +63,11 @@ def send(msg: str):
             json={"chat_id": _chat_id(), "text": msg, "parse_mode": "HTML"},
             timeout=10,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # 过滤掉含 token 的异常信息，防止 token 泄漏到日志
+        err_str = str(e)
+        safe_err = "[敏感信息已过滤]" if token and token in err_str else err_str
+        print(f"[Telegram] 发送失败：{safe_err}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -230,22 +234,26 @@ def format_classification(r: dict) -> str:
 # ─────────────────────────────────────────────────────────────
 
 def read_watchlist() -> list:
-    if not os.path.exists(WATCHLIST_FILE):
-        return []
-    with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
-        return [
-            line.strip().upper()
-            for line in f
-            if line.strip() and not line.strip().startswith("#")
-        ]
+    with _wl_lock:
+        if not os.path.exists(WATCHLIST_FILE):
+            return []
+        with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
+            return [
+                line.strip().upper()
+                for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
 
 
 def write_watchlist(tickers: list):
-    with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
-        f.write("# 自选股列表（通过 Telegram Bot 管理）\n")
-        f.write(f"# 最后更新：{datetime.now(ET).strftime('%Y-%m-%d %H:%M ET')}\n\n")
-        for t in tickers:
-            f.write(t + "\n")
+    with _wl_lock:
+        tmp = WATCHLIST_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("# 自选股列表（通过 Telegram Bot 管理）\n")
+            f.write(f"# 最后更新：{datetime.now(ET).strftime('%Y-%m-%d %H:%M ET')}\n\n")
+            for t in tickers:
+                f.write(t + "\n")
+        os.replace(tmp, WATCHLIST_FILE)  # 原子替换，防止并发截断
 
 
 # ─────────────────────────────────────────────────────────────

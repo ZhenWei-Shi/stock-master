@@ -158,6 +158,12 @@ def open_position(ticker: str, shares: int, entry_price: float,
     # 持仓数量上限（防止多信号并发建仓超过约束）
     open_positions = {k: v for k, v in data.get("positions", {}).items()
                       if v.get("status") == "open"}
+
+    # 防摊平：同标的已有持仓时禁止加仓（对应用户"越补越深"反模式）
+    existing_tickers = {v["ticker"] for v in open_positions.values()}
+    if ticker in existing_tickers:
+        return {"ok": False, "error": f"{ticker} 已有持仓，禁止同向加仓（防摊平保护）"}
+
     if len(open_positions) >= MAX_CONCURRENT_POSITIONS:
         return {"ok": False,
                 "error": (f"已有 {len(open_positions)} 个持仓，达到上限 "
@@ -412,10 +418,13 @@ def mark_to_market(mode: str = "paper") -> dict:
 
         # 检查是否触及止损或目标
         alert = None
+        alert_type = None
         if cur_price <= pos["stop_loss"]:
             alert = f"⚠️ 触及止损价 ${pos['stop_loss']:.2f}！应立即执行止损"
+            alert_type = "stop_loss"
         elif cur_price >= pos["target"]:
             alert = f"✅ 达到目标价 ${pos['target']:.2f}！可考虑减仓"
+            alert_type = "target"
 
         open_summary.append({
             "id":           tid,
@@ -429,6 +438,7 @@ def mark_to_market(mode: str = "paper") -> dict:
             "stop_loss":    pos["stop_loss"],
             "target":       pos["target"],
             "alert":        alert,
+            "alert_type":   alert_type,
         })
 
     acct = data.get("account", {})

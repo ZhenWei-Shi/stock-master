@@ -67,7 +67,7 @@ def record_entry_signals(trade_id: str, ticker: str,
         "aggressive_mode": cold_result.get("aggressive_mode", False),
         "gates": {},
         "market_state":   cold_result.get("market_state", {}).get("state", ""),
-        "vix":            cold_result.get("market_state", {}).get("vix", 0),
+        "vix":            cold_result.get("vix_value", cold_result.get("market_state", {}).get("vix", 0)),
         "bonus":          cold_result.get("bonus", 0),
         "result":         None,  # 平仓后填入
         "pnl_pct":        None,
@@ -237,7 +237,7 @@ def check_anti_patterns(cold_result: dict) -> dict:
         penalty += 10
 
     # 检查 VIX
-    vix = cold_result.get("market_state", {}).get("vix", 0)
+    vix = cold_result.get("vix_value", cold_result.get("market_state", {}).get("vix", 0))
     if patterns.get("vix_danger_above_25") and vix > 25:
         warnings.append(f"⚠️ VIX={vix:.0f}>25，历史数据：高恐慌期亏损集中")
         penalty += 8

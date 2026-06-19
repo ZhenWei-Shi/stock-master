@@ -404,20 +404,35 @@ def _risk_officer(info, hist, close, price, account_value, cold_result, spy_hist
         pos_usd      = account_value * 0.30
         stop_pct     = 3.0
 
-    # Kelly 建议（用保守默认值；实盘后请替换为实测胜率/盈亏比）
-    # 注：用户实测胜率53%、盈亏比参考2.0（短线摆动更保守）
-    W, R       = 0.53, 2.0
+    # Kelly 建议：优先从实测绩效数据读取，不足30笔时用保守默认值
+    W, R = 0.53, 2.0
+    kelly_source = "默认值（样本不足）"
+    try:
+        from .paper_trading import performance_report
+        perf = performance_report("paper")
+        kelly_data = perf.get("kelly", {})
+        total_trades = perf.get("summary", {}).get("total_trades", 0)
+        if total_trades >= 30:
+            W = kelly_data.get("actual_win_rate", 53.0) / 100
+            R = kelly_data.get("actual_rr_ratio", 2.0)
+            kelly_source = f"实测数据（{total_trades}笔）"
+    except Exception:
+        pass
     full_kelly = W - (1 - W) / R
-    half_kelly = max(0, full_kelly / 2)  # Kelly 为负时仓位归零
+    half_kelly = max(0, full_kelly / 2)
     kelly_usd  = account_value * half_kelly
 
     kelly_warning = ""
     if full_kelly <= 0:
         kelly_warning = f"⚠️ Kelly为负({full_kelly*100:.1f}%)！W={W*100:.0f}%/R={R}组合期望值为负，不建议入场。"
 
-    # 风险破产概率（简化估算）
+    # 破产风险（Gambler's Ruin 公式，Thorp 1962）
     edge       = W * R - (1 - W)
-    ror_approx = max(0, (1 - edge) ** (account_value / max_risk_usd)) * 100 if max_risk_usd > 0 else 0
+    if max_risk_usd > 0 and edge > -1:
+        ror_approx = ((1 - edge) / (1 + edge + 1e-9)) ** (account_value / max_risk_usd) * 100
+        ror_approx = max(0, min(100, ror_approx))
+    else:
+        ror_approx = 0
 
     return {
         "analyst":         "风险评估官（Risk Officer）",
@@ -432,7 +447,7 @@ def _risk_officer(info, hist, close, price, account_value, cold_result, spy_hist
         },
         "kelly_criterion": {
             "formula":    "Kelly% = W - (1-W)/R",
-            "inputs":     f"W={W*100:.0f}%（实测胜率近似），R={R}（保守盈亏比）",
+            "inputs":     f"W={W*100:.0f}%，R={R:.2f}（{kelly_source}）",
             "full_kelly": round(full_kelly * 100, 1),
             "half_kelly": round(half_kelly * 100, 1),
             "half_kelly_usd": round(kelly_usd, 2),

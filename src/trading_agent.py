@@ -180,7 +180,7 @@ def run_scan(watchlist: list, account_value: float = 2000,
             current_exposure   = sum(p.get("entry_price", 0) * p.get("shares", 0)
                                      for p in open_list)
         except Exception:
-            current_open_count = 0
+            current_open_count = MAX_CONCURRENT_POSITIONS  # 保守：异常时视为仓位已满
             current_exposure   = 0
         slots = max(0, MAX_CONCURRENT_POSITIONS - current_open_count)
         slots_available = slots   # 让 return dict 限制推送数量
@@ -264,7 +264,7 @@ def run_monitor(mode: str = "paper", auto_stop: bool = True) -> dict:
 
     for pos in mtm.get("open_positions", []):
         alert = pos.get("alert", "")
-        if auto_stop and alert and "止损" in alert:
+        if auto_stop and pos.get("alert_type") == "stop_loss":
             try:
                 r = close_position(
                     pos["id"], pos["current_price"],

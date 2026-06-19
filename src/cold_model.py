@@ -730,6 +730,7 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         "reason":           verdict_reason,
         "gates":            gates,
         "entry_plan":       entry_plan,
+        "vix_value":        vix_val,
         "pdt_status":       pdt_status,
         "aggressive_mode":  aggressive_mode,
         "account_info": {

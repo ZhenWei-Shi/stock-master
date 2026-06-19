@@ -79,7 +79,7 @@ def _rsi(close: pd.Series, period: int = 14) -> float:
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(com=period - 1, min_periods=period).mean()
     loss = (-delta.clip(upper=0)).ewm(com=period - 1, min_periods=period).mean()
-    rs = gain.iloc[-1] / loss.iloc[-1] if loss.iloc[-1] != 0 else 999
+    rs = gain.iloc[-1] / loss.iloc[-1] if loss.iloc[-1] > 1e-9 else 999
     return float(100 - 100 / (1 + rs))
 
 
