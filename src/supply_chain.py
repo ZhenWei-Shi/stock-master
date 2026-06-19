@@ -140,7 +140,7 @@ CHAINS = {
                 "layer": 3,
                 "name": "电网/电力供应",
                 "desc": "为数据中心供电的公用事业",
-                "tickers": ["NEE", "AEP", "VST"],
+                "tickers": ["NEE", "AEP", "AES"],  # VST(Vistra核电)与Layer2 CEG高度同步，换AES(可再生能源/数据中心直供合同，与核电相关性低)
             },
             {
                 "layer": 2,

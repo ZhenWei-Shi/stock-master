@@ -14,10 +14,31 @@ import os
 import time
 import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeoutError
 from datetime import datetime
 import pytz
 
 ET = pytz.timezone("America/New_York")
+
+
+def _timed_thread(fn, timeout: int, send_fn, label: str):
+    """daemon 线程包装器：超时后推送超时提示，防止网络故障时永久阻塞。"""
+    def _wrapper():
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(fn)
+            try:
+                fut.result(timeout=timeout)
+            except FutTimeoutError:
+                try:
+                    send_fn(f"⏰ {label} 超时（>{timeout}s），请检查网络或稍后重试")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    send_fn(f"⚠️ {label} 执行出错：{e}")
+                except Exception:
+                    pass
+    threading.Thread(target=_wrapper, daemon=True).start()
 
 WATCHLIST_FILE = os.path.join(os.path.dirname(__file__), "..", "watchlist.txt")
 _last_update_id = 0
@@ -288,7 +309,7 @@ def handle_command(text: str):
                 except Exception as e:
                     send(f"{t} 分类失败：{e}")
             send(f"\n📋 当前自选股共 {len(wl)} 只\n发 /scan 立即扫描")
-        threading.Thread(target=classify_and_report, daemon=True).start()
+        _timed_thread(classify_and_report, timeout=90, send_fn=send, label="/add 分类")
 
     elif cmd == "/remove":
         del_tickers = [p.upper() for p in parts[1:] if p.isalpha()]
@@ -313,11 +334,10 @@ def handle_command(text: str):
                 send("⚠️ 自选股为空，将使用板块轮动热股扫描（约2-3分钟）...")
             else:
                 send(f"⏳ 开始扫描 {len(wl)} 只自选股 + 板块热股，请稍候（约1-3分钟）...")
-            threading.Thread(
-                target=full_scan_cycle,
-                args=(wl, account, "paper", True),
-                daemon=True,
-            ).start()
+            _timed_thread(
+                lambda: full_scan_cycle(wl, account, "paper", True),
+                timeout=480, send_fn=send, label="/scan"
+            )
         except Exception as e:
             send(f"扫描启动失败：{e}")
 
@@ -330,7 +350,7 @@ def handle_command(text: str):
                 send(format_telegram_report())
             except Exception as e:
                 send(f"板块轮动获取失败：{e}")
-        threading.Thread(target=_do_sector, daemon=True).start()
+        _timed_thread(_do_sector, timeout=90, send_fn=send, label="/sector")
 
     elif cmd == "/hotlist":
         send("⏳ 正在构建动态扫描列表（如缓存过期需约30秒）...")
@@ -351,7 +371,7 @@ def handle_command(text: str):
                 send("\n".join(lines))
             except Exception as e:
                 send(f"动态列表构建失败：{e}")
-        threading.Thread(target=_do_hotlist, daemon=True).start()
+        _timed_thread(_do_hotlist, timeout=120, send_fn=send, label="/hotlist")
 
     elif cmd == "/gex":
         # /gex 或 /gex NVDA TSLA AMD
@@ -366,7 +386,7 @@ def handle_command(text: str):
                 send(format_gex_telegram(results))
             except Exception as e:
                 send(f"GEX 计算失败：{e}")
-        threading.Thread(target=_do_gex, daemon=True).start()
+        _timed_thread(_do_gex, timeout=150, send_fn=send, label="/gex")
 
     elif cmd == "/longhold":
         # /longhold 或 /longhold NVDA AAPL MSFT
@@ -382,7 +402,7 @@ def handle_command(text: str):
                 send(format_longhold_telegram(results))
             except Exception as e:
                 send(f"长持评估失败：{e}")
-        threading.Thread(target=_do_longhold, daemon=True).start()
+        _timed_thread(_do_longhold, timeout=200, send_fn=send, label="/longhold")
 
     elif cmd == "/status":
         wl = read_watchlist()
@@ -407,7 +427,7 @@ def handle_command(text: str):
                     send(format_insider_telegram(r))
                 except Exception as e:
                     send(f"⚠️ {t} 内部人查询失败：{e}")
-        threading.Thread(target=_run_insider, daemon=True).start()
+        _timed_thread(_run_insider, timeout=120, send_fn=send, label="/insider")
 
     elif cmd == "/13dg":
         send("⏳ 查询 SEC 最新13D/G机构大仓申报（近3天）...")
@@ -420,7 +440,7 @@ def handle_command(text: str):
                 return
             for f in filings[:5]:
                 send(format_13dg_telegram(f))
-        threading.Thread(target=_run_13dg, daemon=True).start()
+        _timed_thread(_run_13dg, timeout=90, send_fn=send, label="/13dg")
 
     elif cmd in ("/logexec", "/logskip"):
         # 执行偏差日志（P0-C：关闭信号→实际执行的黑洞监控）
