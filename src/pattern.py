@@ -64,6 +64,7 @@ def detect_vcp(hist: pd.DataFrame) -> dict:
     close  = hist["Close"]
     volume = hist["Volume"]
     high   = hist["High"]
+    low    = hist["Low"]
     price  = float(close.iloc[-1])
 
     # 用近 80 天数据
@@ -71,6 +72,7 @@ def detect_vcp(hist: pd.DataFrame) -> dict:
     c = close.tail(window).reset_index(drop=True)
     v = volume.tail(window).reset_index(drop=True)
     h = high.tail(window).reset_index(drop=True)
+    l = low.tail(window).reset_index(drop=True)
 
     # ── 找局部高点和低点（极值检测）────────────────────────
     # order=7：在±7根K线范围内是最高/最低点才算主要高低点
@@ -87,7 +89,7 @@ def detect_vcp(hist: pd.DataFrame) -> dict:
         ph_idx  = pivot_highs[i - 1]
         ph2_idx = pivot_highs[i]
         # 用 High/Low 计算回调幅度（收盘价会低估实际波动）
-        seg_lows  = [float(h.iloc[j]) for j in range(ph_idx, ph2_idx + 1)]
+        seg_lows  = [float(l.iloc[j]) for j in range(ph_idx, ph2_idx + 1)]
         low_val   = min(seg_lows)
         high_val  = float(h.iloc[ph_idx])
         drawdown  = (high_val - low_val) / high_val * 100

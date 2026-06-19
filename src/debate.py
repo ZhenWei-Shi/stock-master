@@ -405,8 +405,9 @@ def _risk_officer(info, hist, close, price, account_value, cold_result, spy_hist
         stop_pct     = 3.0
 
     # Kelly 建议：优先从实测绩效数据读取，不足30笔时用保守默认值
+    # 警告：0.53/2.0 来自个人历史交易记录，不代表当前股票的统计特性
     W, R = 0.53, 2.0
-    kelly_source = "默认值（样本不足）"
+    kelly_source = "默认值（样本不足，仅供参考，非当前股票统计预期）"
     try:
         from .paper_trading import performance_report
         perf = performance_report("paper")

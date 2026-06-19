@@ -265,7 +265,7 @@ def get_alpaca_options(ticker: str, expiry: str = None) -> dict:
                 "strike": strike,
                 "bid": details.get("bp"),
                 "ask": details.get("ap"),
-                "openInterest": snap.get("dailyBar", {}).get("o"),
+                "openInterest": snap.get("openInterest") or 0,  # dailyBar.o是开盘价非OI
                 "volume": snap.get("dailyBar", {}).get("v"),
                 "impliedVolatility": snap.get("impliedVolatility"),
                 "delta": greeks.get("delta"),

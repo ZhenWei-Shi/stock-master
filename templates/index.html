@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -881,12 +881,14 @@ function renderResult(d) {
       ['6个月', ret.stock_6m, ret.spy_6m],
       ['12个月', ret.stock_12m, ret.spy_12m],
     ].map(([period, s, spy]) => {
-      const diff = +(s - spy).toFixed(1);
+      const sV = (s !== null && s !== undefined) ? s : null;
+      const spyV = (spy !== null && spy !== undefined) ? spy : null;
+      const diff = (sV !== null && spyV !== null) ? +(sV - spyV).toFixed(1) : null;
       return `<tr>
         <td style="color:var(--muted)">${period}</td>
-        <td style="text-align:right;color:${s>=0?'var(--green)':'var(--red)'}">${s}%</td>
-        <td style="text-align:right;color:${spy>=0?'var(--green)':'var(--red)'}">${spy}%</td>
-        <td style="text-align:right" class="${diff>0?'green':'red'}">${diff>0?'+':''}${diff}%</td>
+        <td style="text-align:right;color:${sV!==null&&sV>=0?'var(--green)':'var(--red)'}">${sV!==null?sV+'%':'—'}</td>
+        <td style="text-align:right;color:${spyV!==null&&spyV>=0?'var(--green)':'var(--red)'}">${spyV!==null?spyV+'%':'—'}</td>
+        <td style="text-align:right" class="${diff!==null&&diff>0?'green':'red'}">${diff!==null?(diff>0?'+':'')+diff+'%':'—'}</td>
       </tr>`;
     }).join('');
   }
@@ -955,7 +957,8 @@ function renderGates(gates, targetId) {
 }
 
 function renderOptions(opts, curPrice) {
-  const { max_pain: mp, gamma, expiry } = opts;
+  const { max_pain: mp, gamma, expiry } = opts || {};
+  if (!mp || !gamma) return;
   const mpPrice = mp.max_pain, mpDist = mp.distance_pct;
   const mpColor = mpDist > 0 ? 'var(--green)' : 'var(--red)';
   document.getElementById('opts-meta').innerHTML = `
@@ -971,7 +974,7 @@ function renderOptions(opts, curPrice) {
   document.getElementById('gamma-bar').style.cssText = `width:${Math.round(score/maxS*100)}%;background:${barColor}`;
   setText('gamma-score', `${score}/${maxS}`);
   const badge = document.getElementById('gamma-badge');
-  badge.textContent = gamma.signal ? '🚀 触发' : '未触发';
+  badge.textContent = gamma.signal ? '🚀 触发（估算）' : '未触发';
   badge.style.color = gamma.signal ? 'var(--green)' : 'var(--muted)';
   document.getElementById('gamma-signals').innerHTML = (gamma.signals||[]).map(s =>
     `<div class="gamma-row ${s.ok===true?'ok':s.ok===false?'bad':''}">
@@ -1085,7 +1088,7 @@ function renderGatesFull(d) {
   document.getElementById('inst-detail').innerHTML = `
     <div style="margin-bottom:10px;font-size:13px">
       机构持仓比例：<strong>${inst.inst_pct ? (inst.inst_pct*100).toFixed(1)+'%' : '—'}</strong>
-      &nbsp;|&nbsp; 净方向：<strong style="color:${inst.net_direction>0?'var(--green)':inst.net_direction<0?'var(--red)':'var(--muted)'}">${inst.net_direction>0?'净买入':'净卖出'}</strong>
+      &nbsp;|&nbsp; 净方向：<strong style="color:${inst.net_direction>0?'var(--green)':inst.net_direction<0?'var(--red)':'var(--muted)'}">${inst.net_direction>0?'净买入':inst.net_direction<0?'净卖出':'中性'}</strong>
     </div>
     ${buyers.length ? `<div style="font-size:12px;color:var(--green);margin-bottom:6px">📈 增仓：${buyers.join(', ')}</div>` : ''}
     ${sellers.length ? `<div style="font-size:12px;color:var(--red);margin-bottom:6px">📉 减仓：${sellers.join(', ')}</div>` : ''}
@@ -1411,8 +1414,8 @@ function renderWatchlistCards(items, market) {
         <div style="color:var(--muted);font-size:13px;margin-top:8px">${item.error}</div>
       </div>`;
 
-    const chgColor = item.chg_pct > 0 ? 'var(--green)' : item.chg_pct < 0 ? 'var(--red)' : 'var(--muted)';
-    const chgSign  = item.chg_pct > 0 ? '+' : '';
+    const chgColor = (item.chg_pct ?? 0) > 0 ? 'var(--green)' : (item.chg_pct ?? 0) < 0 ? 'var(--red)' : 'var(--muted)';
+    const chgSign  = (item.chg_pct ?? 0) > 0 ? '+' : '';
     const dir      = item.direction || 'NEUTRAL';
     const dirLabel = DIR_LABELS[dir] || dir;
     const dirCls   = 'dir-' + dir;
@@ -1439,9 +1442,9 @@ function renderWatchlistCards(items, market) {
         <button class="wl-remove" title="移除" onclick="wlRemove('${item.ticker}')">×</button>
         <div style="display:flex;align-items:baseline;gap:10px">
           <div class="wl-ticker" style="cursor:pointer" onclick="jumpToAnalyze('${item.ticker}')">${item.ticker}</div>
-          <div class="wl-chg" style="color:${chgColor}">${chgSign}${item.chg_pct}%</div>
+          <div class="wl-chg" style="color:${chgColor}">${item.chg_pct!==null&&item.chg_pct!==undefined?chgSign+item.chg_pct+'%':'—'}</div>
         </div>
-        <div class="wl-price">$${item.price}</div>
+        <div class="wl-price">${item.price!==null&&item.price!==undefined?'$'+item.price:'—'}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
           <span class="wl-badge" style="background:rgba(88,166,255,.12);color:${rsColor}">
             RS ${item.rs !== null ? item.rs : '—'}
@@ -1888,7 +1891,7 @@ function renderFundamentals(d) {
   const sentColor = nw.sentiment==='bullish'?'var(--green)':nw.sentiment==='bearish'?'var(--red)':'var(--muted)';
   document.getElementById('fund-news').innerHTML = `
     <div style="font-weight:600;font-size:13px;margin-bottom:8px">
-      📰 近期新闻情绪：<span style="color:${sentColor}">${nw.sentiment==='bullish'?'看涨':nw.sentiment==='bearish'?'看跌':'中性'}</span>
+      📰 近期新闻情绪（关键词估算）：<span style="color:${sentColor}">${nw.sentiment==='bullish'?'看涨':nw.sentiment==='bearish'?'看跌':'中性'}</span>
       <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:8px">🟢${nw.bull_count||0} 🔴${nw.bear_count||0}</span>
     </div>
     ${(nw.items||[]).slice(0,6).map(n=>`
@@ -1957,7 +1960,7 @@ function renderFearGreed(fg) {
   document.getElementById('fg-score').textContent = score !== null ? Math.round(score) : '—';
   document.getElementById('fg-score').style.color = color;
   document.getElementById('fg-label').textContent = fg.label || '';
-  document.getElementById('fg-desc').textContent  = (
+  document.getElementById('fg-desc').textContent  = score === null || score === undefined ? '数据不可用' : (
     score < 25 ? '市场极度恐惧，历史上往往是买入机会（反身性）' :
     score < 45 ? '市场恐惧，情绪悲观但非极端' :
     score < 55 ? '市场中性，观望情绪主导' :

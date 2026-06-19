@@ -250,7 +250,7 @@ def fetch_sector_rankings(force: bool = False) -> dict:
             heat = 0.0     # 完全无数据，排末尾
         rs_1m = rs_1m or 0.0
         rs_3m = rs_3m or 0.0
-        accel = rs_1m > rs_3m  # 资金加速流入
+        accel = rs_1m > (rs_3m / 3)  # 近1月RS是否优于3月平均月度RS
         scores.append({
             "etf":   etf,
             "name":  meta["name"],

@@ -417,6 +417,7 @@ def api_earnings_calendar():
     tickers = [t.strip() for t in raw.split(",") if t.strip()][:20]
     events  = []
 
+    failed = []
     for ticker in tickers:
         try:
             t   = yf.Ticker(ticker)
@@ -430,14 +431,19 @@ def api_earnings_calendar():
             elif cal is not None and hasattr(cal, 'columns') and "Earnings Date" in cal.columns:
                 dates = cal["Earnings Date"].tolist()
 
+            if not dates:
+                failed.append(ticker)
             for d in dates[:2]:
                 date_str = str(d)[:10]
                 events.append({"ticker": ticker, "date": date_str})
         except Exception:
-            pass
+            failed.append(ticker)
 
     events.sort(key=lambda x: x["date"])
-    return jsonify({"ok": True, "events": events})
+    result = {"ok": True, "events": events}
+    if failed:
+        result["warning"] = f"以下 {len(failed)} 只股票未获取到财报日期：{', '.join(failed)}"
+    return jsonify(result)
 
 
 @app.route("/api/iv-analytics")
@@ -878,9 +884,13 @@ def api_dealer_delta():
     if not ticker:
         return jsonify({"ok": False, "error": "请输入股票代码"})
     try:
-        calls, puts, current_price = get_options_chain(ticker, expiry)
-        if calls.empty and puts.empty:
+        calls, puts, _, _ = get_options_chain(ticker, expiry)
+        if calls is None or puts is None or (calls.empty and puts.empty):
             return jsonify({"ok": False, "error": "无期权数据"})
+        hist = yf.Ticker(ticker).history(period="2d")
+        if hist.empty:
+            return jsonify({"ok": False, "error": "无法获取当前价格"})
+        current_price = float(hist["Close"].iloc[-1])
         result = calculate_dealer_delta(calls, puts, current_price)
         return jsonify({"ok": True, "ticker": ticker, **result})
     except Exception as e:

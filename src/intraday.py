@@ -196,7 +196,7 @@ def run_quant_model(ticker: str, portfolio_size: float = 100_000,
                 filters["vix"] = {"pass": True,  "reason": f"VIX={vix:.1f} 正常 ✅"}
         except Exception:
             vix = 20.0
-            filters["vix"] = {"pass": True, "reason": "VIX 数据暂不可用，默认通过"}
+            filters["vix"] = {"pass": "warn", "reason": "VIX 数据暂不可用，建议人工确认后再入场"}
 
         if vr < 0.4:
             filters["volume"] = {"pass": False, "reason": f"成交量极低（{vr:.0%} 均值），流动性不足"}

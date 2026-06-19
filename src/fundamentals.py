@@ -227,7 +227,7 @@ def get_news_sentiment(ticker: str) -> dict:
         return {
             "items": items, "bull_count": bull, "bear_count": bear,
             "neutral_count": total - bull - bear, "sentiment": overall,
-            "note": "v2：已启用否定词翻转（'didn't beat'→bear，'no layoffs'→bull）",
+            "note": "⚠️ 基于关键词匹配估算，非NLP情感模型；否定词翻转已启用（'didn't beat'→看空，'no layoffs'→看多）",
         }
     except Exception as e:
         return {"error": str(e), "items": [], "sentiment": "neutral"}

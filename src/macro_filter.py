@@ -473,7 +473,7 @@ def get_etf_signals() -> dict:
                 continue
 
         # 推断宏观主题（基于 ETF 变化幅度阈值）
-        vix     = signals.get("vix", 0)
+        vix     = signals.get("vix", 0)  # VIX 日涨幅%（不用于主题判断）
         oil     = signals.get("oil", 0)
         gold    = signals.get("gold", 0)
         bonds   = signals.get("bonds", 0)
@@ -483,9 +483,15 @@ def get_etf_signals() -> dict:
         defense = signals.get("defense", 0)
         energy  = signals.get("energy", 0)
 
-        if vix > 15:
+        # VIX 主题判断用绝对水平（涨幅%在低基数时严重误判：VIX=12涨15%→13.8也触发"地缘风险"）
+        try:
+            _vix_col = raw["^VIX"]["Close"].dropna()
+            vix_level = float(_vix_col.iloc[-1]) if len(_vix_col) > 0 else 20.0
+        except Exception:
+            vix_level = 20.0
+        if vix_level > 30:
             inferred_themes.append("GEOPOLITICAL_TENSION")
-        elif vix > 8:
+        elif vix_level > 20:
             inferred_themes.append("RECESSION_FEAR")
 
         if oil > 3:
