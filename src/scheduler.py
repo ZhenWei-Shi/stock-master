@@ -323,12 +323,14 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                 shares = sig.get("shares")
                 if entry and stop and target:
                     rr = (target - entry) / (entry - stop) if entry > stop else 0
+                    limit_px = round(entry * 1.005, 2)   # 最大追价 0.5%，超过此价跳过本笔
                     msg_sig += (
                         f"—\n"
                         f"入场区间：${entry:.2f}"
                         f"{f'  ×{shares}股' if shares else ''}\n"
                         f"止损：${stop:.2f} | 目标：${target:.2f}\n"
                         f"R:R = 1:{rr:.1f}\n"
+                        f"⚡ <b>限价上限：${limit_px:.2f}</b>  超过此价跳过本笔\n"
                     )
                 # 附加长持评分（带超时，避免 yfinance 网络挂起阻塞 GO 信号推送）
                 try:
@@ -342,7 +344,12 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                         msg_sig += lh_line + "\n"
                 except (FuturesTimeout, Exception):
                     pass
-                msg_sig += f"详情：/api/debate-with-cold?ticker={sig['ticker']}&account={account:.0f}"
+                msg_sig += (
+                    f"详情：/api/debate-with-cold?ticker={sig['ticker']}&account={account:.0f}\n"
+                    f"—\n"
+                    f"✅ 执行后请记录：<code>/logexec {sig['ticker']} &lt;实际成交价&gt;</code>\n"
+                    f"❌ 跳过（超限价）请记录：<code>/logskip {sig['ticker']}</code>"
+                )
                 send_telegram(msg_sig)
         else:
             send_telegram(f"📊 扫描完成，本次无GO信号（已扫{len(scan_list)}只）")

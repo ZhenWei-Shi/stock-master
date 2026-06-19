@@ -245,10 +245,13 @@ def handle_command(text: str):
             "/scan             立即扫描（含板块轮动扩充）\n"
             "/sector           板块轮动排名（强制刷新）\n"
             "/hotlist          查看当日动态扫描列表\n"
-            "/gex [NVDA TSLA]      GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
-            "/longhold NVDA AAPL   长期持仓质量评估（1年以上视角）\n"
-            "/status               运行状态\n"
-            "/help                 显示帮助"
+            "/gex [NVDA TSLA]           GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
+            "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
+            "/logexec NVDA 143.50       记录实际成交价（执行追踪）\n"
+            "/logskip NVDA              记录跳过（超出限价）\n"
+            "/execreport                执行偏差统计报告\n"
+            "/status                    运行状态\n"
+            "/help                      显示帮助"
         )
 
     elif cmd == "/list":
@@ -390,6 +393,46 @@ def handle_command(text: str):
             f"定时任务：09:00 晨报 / 09:45 扫描 / 12:00 监控 / 15:30 扫描 / 16:05 日报\n"
             f"发 /hotlist 查看今日动态扫描列表"
         )
+
+    elif cmd in ("/logexec", "/logskip"):
+        # 执行偏差日志（P0-C：关闭信号→实际执行的黑洞监控）
+        # 用法：/logexec NVDA 143.50    或    /logskip NVDA
+        from src.paper_trading import log_execution
+        ticker_arg = parts[1].upper() if len(parts) > 1 else ""
+        if not ticker_arg:
+            send("用法：/logexec NVDA 143.50  或  /logskip NVDA")
+            return
+        if cmd == "/logexec":
+            if len(parts) < 3:
+                send("用法：/logexec NVDA 143.50（需填写实际成交价）")
+                return
+            try:
+                actual_px = float(parts[2])
+                r = log_execution(ticker_arg, signal_price=0, actual_price=actual_px,
+                                  signal_time="", action="entered",
+                                  note="Telegram手动记录")
+                send(f"✅ 已记录 {ticker_arg} 执行价 ${actual_px:.2f}")
+            except ValueError:
+                send(f"价格格式错误：{parts[2]}")
+        else:  # /logskip
+            log_execution(ticker_arg, signal_price=0, actual_price=0,
+                          signal_time="", action="skipped",
+                          note="超出限价，Telegram手动记录")
+            send(f"⏭ 已记录 {ticker_arg} 跳过（信号超出限价）")
+
+    elif cmd == "/execreport":
+        from src.paper_trading import execution_deviation_report
+        r = execution_deviation_report()
+        if r.get("note"):
+            send(f"📊 <b>执行偏差报告</b>\n{r['note']}\n\n"
+                 f"总信号：{r.get('total_signals',0)}  "
+                 f"已执行：{r.get('entered',0)}  "
+                 f"跳过：{r.get('skipped',0)}  "
+                 f"手动改单：{r.get('manual_override',0)}\n"
+                 f"平均偏差：{r.get('avg_deviation_pct',0):+.2f}%  "
+                 f"最大偏差：{r.get('max_deviation_pct',0):+.2f}%")
+        else:
+            send(str(r))
 
     else:
         send(f"未知指令：{cmd}\n发 /help 查看支持的指令")

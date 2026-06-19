@@ -110,8 +110,8 @@ CANSLIM_B_BONUS             = 8        # CANSLIM B级加分
 CANSLIM_D_PENALTY           = 12       # CANSLIM D级扣分
 PEAD_BONUS                  = 8        # PEAD漂移信号加分
 QUALITY_A_BONUS             = 5        # 质量因子A加分
-UOA_BULL_BONUS              = 10       # 看涨期权异常加分
-UOA_BEAR_PENALTY            = 8        # 看跌期权异常扣分
+UOA_BULL_BONUS              = 0        # 已下架：yfinance期权量无法区分买方方向，数据无效
+UOA_BEAR_PENALTY            = 0        # 已下架：同上
 SMF_BULL_BONUS              = 10       # 机构资金流入加分
 SMF_BEAR_PENALTY            = 8        # 机构资金流出扣分
 SQUEEZE_BONUS               = 5        # 逼空信号加分
@@ -572,14 +572,11 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # 无论标准/激进，有机构信号都加分（上限+20，不影响一票否决逻辑）
     try:
         from .smart_money import detect_unusual_options, smart_money_flow, detect_short_squeeze
-        # 期权异常：看涨大单押注 +10
+        # 期权异常：yfinance 仅有成交量快照，无法区分买方主动性（买call vs 卖covered call
+        # 数据完全相同），方向判断等同随机噪音。UOA 加分已下架，仅保留信息展示。
         uoa = detect_unusual_options(ticker)
-        if uoa.get("ok") and uoa.get("bias") == "bullish":
-            bonus += 10
-            bonus_notes.append(f"机构期权看涨押注（+10）")
-        elif uoa.get("ok") and uoa.get("bias") == "bearish" and direction == "LONG":
-            bonus -= 8
-            bonus_notes.append(f"期权看跌异常，谨慎做多（-8）")
+        if uoa.get("ok"):
+            bonus_notes.append(f"期权异常检测：{uoa.get('bias','中性')}（数据不可验证，不计分）")
 
         # 智能资金流向：收盘段净流入 +10
         smf = smart_money_flow(ticker)

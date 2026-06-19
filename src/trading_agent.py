@@ -91,7 +91,8 @@ def run_scan(watchlist: list, account_value: float = 2000,
     """
     from .cold_model import cold_decision
     from .debate import generate_trade_debate
-    from .paper_trading import open_position, list_positions, mark_to_market
+    from .paper_trading import (open_position, list_positions, mark_to_market,
+                                 MAX_CONCURRENT_POSITIONS, MAX_TOTAL_EXPOSURE_PCT)
     from .pdt_guard import check_pdt_risk, get_rolling_day_trades
 
     now        = datetime.now(ET)
@@ -173,12 +174,16 @@ def run_scan(watchlist: list, account_value: float = 2000,
         print(f"\n[Agent] 发现 {len(go_signals)} 个高质量信号，开模拟仓...")
         try:
             existing = list_positions(mode)
-            current_open_count = len(existing.get("open", []))
+            open_list = existing.get("open", [])
+            current_open_count = len(open_list)
+            current_exposure   = sum(p.get("entry_price", 0) * p.get("shares", 0)
+                                     for p in open_list)
         except Exception:
             current_open_count = 0
-        slots = max(0, 3 - current_open_count)
+            current_exposure   = 0
+        slots = max(0, MAX_CONCURRENT_POSITIONS - current_open_count)
         if slots == 0:
-            print("[Agent] 已有3个持仓，跳过本次开仓")
+            print(f"[Agent] 已有{current_open_count}个持仓（上限{MAX_CONCURRENT_POSITIONS}），跳过本次开仓")
         for sig in go_signals[:slots]:  # 剩余可用仓位槽
             ep = sig["cold"].get("entry_plan", {})
             if not ep or ep.get("shares", 0) < 1:

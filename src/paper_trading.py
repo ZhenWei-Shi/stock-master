@@ -39,9 +39,13 @@ DEFAULT_SLIPPAGE_PCT        = 0.05     # 默认滑点（市价单，大盘股）
 MAX_SLIPPAGE_PCT            = 1.0      # 最大允许滑点（拦截异常输入）
 MAX_POSITION_PCT            = 0.50     # 单仓上限（账户净值50%）
 
+# ── 持仓约束 ─────────────────────────────────────────────────
+MAX_CONCURRENT_POSITIONS    = 2        # 最多同时持有2仓（$2k账户，3仓=150%仓位风险）
+MAX_TOTAL_EXPOSURE_PCT      = 0.80     # 总仓位上限80%账户净值（留20%应急缓冲）
+
 # ── 熔断器 ───────────────────────────────────────────────────
 CB_LOSS_TRIGGER             = 5        # 连续亏损N笔触发熔断
-CB_DRAWDOWN_TRIGGER         = -10.0    # 回撤超过10%触发熔断（负数）
+CB_DRAWDOWN_TRIGGER         = -6.0     # 单日回撤超过6%触发熔断（原10%与最坏路径不自洽：5笔×止损可达-20%）
 
 # ── 追踪止损 ─────────────────────────────────────────────────
 TRAIL_STOP_DEFAULT          = 8.0      # 默认追踪止损%
@@ -150,6 +154,23 @@ def open_position(ticker: str, shares: int, entry_price: float,
     if total_cost > max_single:
         return {"ok": False,
                 "error": f"超出单仓上限（账户{MAX_POSITION_PCT*100:.0f}%=${max_single:.2f}），请减少股数"}
+
+    # 持仓数量上限（防止多信号并发建仓超过约束）
+    open_positions = {k: v for k, v in data.get("positions", {}).items()
+                      if v.get("status") == "open"}
+    if len(open_positions) >= MAX_CONCURRENT_POSITIONS:
+        return {"ok": False,
+                "error": (f"已有 {len(open_positions)} 个持仓，达到上限 "
+                          f"{MAX_CONCURRENT_POSITIONS}（风控约束），等待现有仓位平仓后再入场")}
+
+    # 总仓位上限（单仓 OK 不等于组合 OK）
+    current_exposure = sum(p.get("entry_price", 0) * p.get("shares", 0)
+                           for p in open_positions.values())
+    if acct_value > 0 and (current_exposure + total_cost) / acct_value > MAX_TOTAL_EXPOSURE_PCT:
+        used_pct = current_exposure / acct_value * 100
+        return {"ok": False,
+                "error": (f"总仓位将达 {(current_exposure+total_cost)/acct_value*100:.0f}%"
+                          f"（已用 {used_pct:.0f}%，上限 {MAX_TOTAL_EXPOSURE_PCT*100:.0f}%），拒绝新仓")}
 
     if total_cost > available:
         return {"ok": False, "error": f"资金不足：需${total_cost:.2f}，可用${available:.2f}"}
@@ -638,4 +659,72 @@ def list_positions(mode: str = "paper") -> dict:
         "open":    [v for v in pos.values() if v.get("status") == "open"],
         "closed":  [v for v in pos.values() if v.get("status") == "closed"],
         "account": data.get("account", {}),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 执行偏差日志（P0-C：关闭信号→实际执行的黑洞监控）
+# ─────────────────────────────────────────────────────────────
+
+_EXEC_LOG = os.path.join(_DATA, "execution_log.json")
+
+
+def log_execution(ticker: str, signal_price: float, actual_price: float,
+                  signal_time: str, action: str = "entered",
+                  note: str = "") -> dict:
+    """
+    记录信号价格 vs 实际执行价格，量化执行摩擦。
+
+    action: "entered"（已执行）| "skipped"（信号超出限价，跳过）| "manual_override"（手动改单）
+    """
+    if not os.path.exists(_EXEC_LOG):
+        data = {"logs": []}
+    else:
+        with open(_EXEC_LOG, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+    deviation_pct = ((actual_price - signal_price) / signal_price * 100
+                     if signal_price > 0 else 0)
+    data["logs"].append({
+        "at":            str(datetime.now(ET)),
+        "ticker":        ticker.upper(),
+        "signal_price":  round(signal_price, 4),
+        "actual_price":  round(actual_price, 4),
+        "deviation_pct": round(deviation_pct, 3),
+        "action":        action,
+        "signal_time":   signal_time,
+        "note":          note,
+    })
+    with open(_EXEC_LOG, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    return {"ok": True, "deviation_pct": round(deviation_pct, 3)}
+
+
+def execution_deviation_report() -> dict:
+    """汇总执行偏差统计：量化信号→实际下单的系统性摩擦。"""
+    if not os.path.exists(_EXEC_LOG):
+        return {"ok": True, "note": "暂无执行记录。请在每次下单后调用 log_execution()。"}
+    with open(_EXEC_LOG, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    logs = data.get("logs", [])
+    if not logs:
+        return {"ok": True, "note": "执行日志为空"}
+
+    entered  = [l for l in logs if l["action"] == "entered"]
+    skipped  = [l for l in logs if l["action"] == "skipped"]
+    override = [l for l in logs if l["action"] == "manual_override"]
+    deviations = [l["deviation_pct"] for l in entered]
+    avg_dev  = float(np.mean(deviations)) if deviations else 0
+    return {
+        "ok":            True,
+        "total_signals": len(logs),
+        "entered":       len(entered),
+        "skipped":       len(skipped),
+        "manual_override": len(override),
+        "avg_deviation_pct": round(avg_dev, 3),
+        "max_deviation_pct": round(max(deviations), 3) if deviations else 0,
+        "execution_rate": f"{len(entered)/len(logs)*100:.0f}%" if logs else "0%",
+        "note": (f"平均入场价偏差 {avg_dev:+.2f}%（正数=追高，负数=抄底）。"
+                 f"跳过 {len(skipped)} 次信号（限价纪律）。"
+                 f"手动改单 {len(override)} 次（待分析原因）。"),
     }
