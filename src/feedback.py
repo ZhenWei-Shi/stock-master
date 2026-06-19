@@ -192,8 +192,10 @@ def analyze_patterns() -> dict:
         "ready":               True,
     }
     try:
-        with open(_PATTERN, "w", encoding="utf-8") as f:
+        _tmp = _PATTERN + ".tmp"
+        with open(_tmp, "w", encoding="utf-8") as f:
             json.dump(patterns, f, ensure_ascii=False, indent=2)
+        os.replace(_tmp, _PATTERN)
     except OSError:
         pass  # 写失败不影响调用方；下次还会重新计算
 

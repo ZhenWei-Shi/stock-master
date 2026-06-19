@@ -215,7 +215,9 @@ def get_institutional_analysis(ticker: str) -> dict:
         if holders is not None and not holders.empty:
             for _, row in holders.iterrows():
                 pct_out = row.get("% Out") if "% Out" in holders.columns else None
-                pct_change = row.get("pctChange") if "pctChange" in holders.columns else None
+                # yfinance 不同版本字段名不一致，逐一尝试
+                _chg_col = next((c for c in ("pctChange", "% Change", "Change") if c in holders.columns), None)
+                pct_change = row.get(_chg_col) if _chg_col else None
 
                 try:
                     shares_val = int(row.get("Shares", 0)) if row.get("Shares") is not None else None

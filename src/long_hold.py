@@ -407,7 +407,7 @@ def long_hold_eval(ticker: str) -> dict:
             delta = ins.get("score_delta", 0)
             if delta > 0 and total < 60:
                 delta = min(delta, 4)
-            total = min(100, total + delta)
+            total = max(0, min(100, total + delta))
             if delta > 0:
                 positives.append(ins["note"])
             elif delta < 0:

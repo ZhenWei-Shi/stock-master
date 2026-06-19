@@ -256,8 +256,10 @@ def calculate_gex(ticker: str) -> dict:
         if len(hist_1mo) >= 10:
             returns = hist_1mo["Close"].pct_change().dropna()
             hv30    = float(returns.std() * np.sqrt(252))
+            hv_note = f"HV30={hv30*100:.1f}%（实测）"
         else:
-            hv30 = 0.30
+            hv30    = 0.30
+            hv_note = "⚠️ 数据不足(<10天)，HV30使用默认值30%，Gamma估算精度低"
 
         def bs_gamma(S, K, T, sigma, r=0.05):
             """Black-Scholes Gamma（在 S 时刻，行权价 K 的 Gamma 值）"""
@@ -340,6 +342,7 @@ def calculate_gex(ticker: str) -> dict:
                 for s, g in top_levels
             ],
             "hv30_used":       round(hv30 * 100, 1),
+            "hv_note":         hv_note,
             "note": (
                 "⚠️ GEX 数据用 B-S 模型估算，方向可信，绝对数值仅供参考。"
                 "专业版使用 SpotGamma / Unusual Whales（付费）数据。"
@@ -509,8 +512,8 @@ def smart_money_flow(ticker: str) -> dict:
         open_vwap  = _vwap_segment(open_bars)
         close_vwap = _vwap_segment(close_bars)
 
-        prev_close_hist = tk.history(period="2d", interval="1d")
-        prev_close = float(prev_close_hist["Close"].iloc[-2]) if len(prev_close_hist) >= 2 else float(close_all.iloc[0])
+        prev_close_hist = tk.history(period="5d", interval="1d")  # 周一只有1日数据时period="2d"不够
+        prev_close = float(prev_close_hist["Close"].iloc[-2]) if len(prev_close_hist) >= 2 else float(prev_close_hist["Close"].iloc[-1])
         today_close = float(close_all.iloc[-1])
 
         # 开盘段变化（情绪化噪音）

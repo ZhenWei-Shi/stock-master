@@ -120,14 +120,12 @@ def api_analyze():
         gates = nine_gates_check(info, rs, market)
         _auto_gate9(gates, gamma)
 
-        # ATR(14) 用于止损/目标计算
-        _tr = np.maximum(
-            (hist["High"] - hist["Low"]).values,
-            np.maximum(
-                np.abs(hist["High"].values - np.roll(hist["Close"].values, 1)),
-                np.abs(hist["Low"].values  - np.roll(hist["Close"].values, 1))
-            )
-        )
+        # ATR(14)：用 shift(1) 对齐前收盘价，避免 np.roll 首行脏值
+        _c = hist["Close"]
+        _hl = (hist["High"] - hist["Low"]).values[1:]
+        _hc = (hist["High"] - _c.shift(1)).abs().values[1:]
+        _lc = (hist["Low"]  - _c.shift(1)).abs().values[1:]
+        _tr = np.maximum(_hl, np.maximum(_hc, _lc))
         _atr = float(np.mean(_tr[-14:]))
 
         # 综合建议
