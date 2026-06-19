@@ -572,11 +572,20 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # 无论标准/激进，有机构信号都加分（上限+20，不影响一票否决逻辑）
     try:
         from .smart_money import detect_unusual_options, smart_money_flow, detect_short_squeeze
-        # 期权异常：yfinance 仅有成交量快照，无法区分买方主动性（买call vs 卖covered call
-        # 数据完全相同），方向判断等同随机噪音。UOA 加分已下架，仅保留信息展示。
+        # 期权流向（v2）：bid/ask位置推断主动买方方向，比纯Vol/OI更可信但仍是弱信号
+        # 加分权重从±10/8 收窄至±5/3（置信度折扣）
         uoa = detect_unusual_options(ticker)
         if uoa.get("ok"):
-            bonus_notes.append(f"期权异常检测：{uoa.get('bias','中性')}（数据不可验证，不计分）")
+            if uoa.get("bias") == "bullish" and abs(uoa.get("net_call_flow", 0)) > 300:
+                bonus += 5
+                bonus_notes.append(
+                    f"期权Call主动买入主导（净流向{uoa.get('net_call_flow',0):+.0f}手，+5，弱信号）"
+                )
+            elif uoa.get("bias") == "bearish" and direction == "LONG":
+                bonus -= 3
+                bonus_notes.append(
+                    f"期权Put主动买入（净流向{uoa.get('net_put_flow',0):+.0f}手，-3，可能对冲）"
+                )
 
         # 智能资金流向：收盘段净流入 +10
         smf = smart_money_flow(ticker)
@@ -595,6 +604,19 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                 bonus_notes.append(f"逼空潜力高（空仓{sqz['short_float_pct']}%，+5）")
     except Exception:
         pass  # 智能资金模块失败不影响主流程
+
+    # ── SEC Form 4 内部人买卖（真实可验证信号，替代失效的旧UOA）───────
+    try:
+        from .insider_tracker import insider_summary
+        ins = insider_summary(ticker)
+        if ins.get("ok") and ins.get("score_delta", 0) != 0:
+            delta = ins["score_delta"]
+            bonus += delta
+            bonus_notes.append(
+                f"内部人{'+' if delta > 0 else ''}{delta}（{ins.get('note', '')}，SEC Form 4）"
+            )
+    except Exception:
+        pass  # 不影响主流程
 
     go_threshold   = 65 if aggressive_mode else 75
     wait_threshold = 45 if aggressive_mode else 55

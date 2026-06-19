@@ -396,6 +396,22 @@ def long_hold_eval(ticker: str) -> dict:
     positives = g_pos + b_pos + t_pos + v_pos
     negatives = g_neg + b_neg + t_neg + v_neg
 
+    # 内部人交易信号（SEC Form 4，独立来源，不替代四维得分，作为 +/- 修正）
+    insider_data = None
+    try:
+        from .insider_tracker import insider_summary
+        ins = insider_summary(ticker)
+        if ins.get("ok"):
+            insider_data = ins
+            delta = ins.get("score_delta", 0)
+            total = min(100, total + delta)
+            if delta > 0:
+                positives.append(ins["note"])
+            elif delta < 0:
+                negatives.append(ins["note"])
+    except Exception:
+        pass
+
     # 评级
     if total >= HOLD_THRESHOLD:
         verdict = "HOLD"
@@ -444,6 +460,7 @@ def long_hold_eval(ticker: str) -> dict:
         "negatives":     negatives,
         "moat":          moat,
         "sell_triggers": sell_triggers,
+        "insider":       insider_data,
     }
 
 

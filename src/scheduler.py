@@ -463,9 +463,35 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[Sector] 动态 watchlist 构建失败：{e}")
 
+        # 4. SEC 13D/G 机构大仓监控（晨报时查一次）
+        try:
+            from src.sec_13dg_monitor import run_13dg_monitor
+            wl = _latest_watchlist()
+            r13 = run_13dg_monitor(watchlist=wl,
+                                   send_fn=send_telegram if use_telegram else None)
+            if r13["new_count"]:
+                print(f"[13D/G] 推送 {r13['new_count']} 条新申报：{r13['pushed']}")
+            else:
+                print("[13D/G] 无新机构大仓申报")
+        except Exception as e:
+            print(f"[13D/G] 监控失败：{e}")
+
+    def _afternoon_13dg():
+        """14:00 午后再查一次13D/G（大陆时间07:00前提交的申报可能当天才出现）。"""
+        try:
+            from src.sec_13dg_monitor import run_13dg_monitor
+            wl = _latest_watchlist()
+            r13 = run_13dg_monitor(watchlist=wl,
+                                   send_fn=send_telegram if use_telegram else None)
+            if r13["new_count"]:
+                print(f"[13D/G] 午后推送 {r13['new_count']} 条新申报")
+        except Exception as e:
+            print(f"[13D/G] 午后监控失败：{e}")
+
     SCHEDULE = {
-        (9,   0): ("macro_refresh",  _macro_refresh),
-        (9,  45): ("morning_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
+        (9,   0): ("macro_refresh",   _macro_refresh),
+        (14,  0): ("afternoon_13dg",  _afternoon_13dg),
+        (9,  45): ("morning_scan",    lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (12,  0): ("noon_monitor",   lambda: monitor_cycle(mode, use_telegram)),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),

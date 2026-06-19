@@ -247,6 +247,8 @@ def handle_command(text: str):
             "/hotlist          查看当日动态扫描列表\n"
             "/gex [NVDA TSLA]           GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
+            "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
+            "/13dg                      SEC 13D/G机构大仓新申报（近3天）\n"
             "/logexec NVDA 143.50       记录实际成交价（执行追踪）\n"
             "/logskip NVDA              记录跳过（超出限价）\n"
             "/execreport                执行偏差统计报告\n"
@@ -393,6 +395,32 @@ def handle_command(text: str):
             f"定时任务：09:00 晨报 / 09:45 扫描 / 12:00 监控 / 15:30 扫描 / 16:05 日报\n"
             f"发 /hotlist 查看今日动态扫描列表"
         )
+
+    elif cmd == "/insider":
+        tickers_arg = [p.upper() for p in parts[1:] if p.isalpha()] or ["NVDA"]
+        send(f"⏳ 查询 {', '.join(tickers_arg)} 的 SEC Form 4 内部人交易记录...")
+        def _run_insider():
+            from src.insider_tracker import insider_summary, format_insider_telegram
+            for t in tickers_arg[:4]:
+                try:
+                    r = insider_summary(t)
+                    send(format_insider_telegram(r))
+                except Exception as e:
+                    send(f"⚠️ {t} 内部人查询失败：{e}")
+        threading.Thread(target=_run_insider, daemon=True).start()
+
+    elif cmd == "/13dg":
+        send("⏳ 查询 SEC 最新13D/G机构大仓申报（近3天）...")
+        def _run_13dg():
+            from src.sec_13dg_monitor import check_new_13dg, format_13dg_telegram
+            wl = read_watchlist()
+            filings = check_new_13dg(watchlist=wl if wl else None)
+            if not filings:
+                send("✅ 最近3天无新13D/G申报（针对当前自选股）")
+                return
+            for f in filings[:5]:
+                send(format_13dg_telegram(f))
+        threading.Thread(target=_run_13dg, daemon=True).start()
 
     elif cmd in ("/logexec", "/logskip"):
         # 执行偏差日志（P0-C：关闭信号→实际执行的黑洞监控）
