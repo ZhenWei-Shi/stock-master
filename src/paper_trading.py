@@ -578,8 +578,9 @@ def compare_paper_vs_real() -> dict:
     paper_perf = performance_report("paper")
     real_perf  = performance_report("real")
 
-    if not paper_perf.get("ok") or not real_perf.get("ok"):
-        return {"ok": True, "note": "需要同时有模拟盘和真实盘数据才能对比"}
+    if (not paper_perf.get("ok") or not real_perf.get("ok")
+            or "summary" not in paper_perf or "summary" not in real_perf):
+        return {"ok": True, "note": "需要同时有已关闭交易才能对比模拟盘与真实盘"}
 
     paper_pnl = paper_perf.get("summary", {}).get("total_pnl_pct", 0)
     real_pnl  = real_perf.get("summary",  {}).get("total_pnl_pct", 0)
@@ -597,8 +598,8 @@ def compare_paper_vs_real() -> dict:
 
     return {
         "ok": True,
-        "paper": {"pnl_pct": paper_pnl, "trades": paper_perf["summary"]["total_trades"]},
-        "real":  {"pnl_pct": real_pnl,  "trades": real_perf["summary"]["total_trades"]},
+        "paper": {"pnl_pct": paper_pnl, "trades": paper_perf.get("summary", {}).get("total_trades", 0)},
+        "real":  {"pnl_pct": real_pnl,  "trades": real_perf.get("summary",  {}).get("total_trades", 0)},
         "gap_pct": round(gap, 2),
         "friction_analysis": friction_analysis,
         "paper_kelly": paper_perf.get("kelly", {}),
