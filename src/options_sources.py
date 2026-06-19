@@ -105,15 +105,16 @@ def get_cboe_pcr() -> dict:
     """
     CBOE 每日 Put/Call 比率数据
     Total PCR > 1.0 = 市场恐慌 / PCR < 0.7 = 市场贪婪
+    注意：CBOE API 字段名未经官方确认，大概率返回 pcr_total=null
     """
     try:
-        # CBOE 公开数据文件
+        # CBOE 公开数据文件（字段名为猜测，如返回null属正常现象）
         url = "https://www.cboe.com/data/multipage-options-chart/chart-data/options-chart-data.json"
         r = requests.get(url, timeout=8,
                          headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
             data = r.json()
-            # 尝试解析
+            # 尝试解析（字段名不稳定，常返回 None）
             pcr_total = data.get("Total P/C Ratio") or data.get("TOTAL") or None
             return {"source": "CBOE", "pcr_total": pcr_total, "raw": list(data.keys())[:5]}
 

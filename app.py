@@ -120,8 +120,18 @@ def api_analyze():
         gates = nine_gates_check(info, rs, market)
         _auto_gate9(gates, gamma)
 
+        # ATR(14) 用于止损/目标计算
+        _tr = np.maximum(
+            (hist["High"] - hist["Low"]).values,
+            np.maximum(
+                np.abs(hist["High"].values - np.roll(hist["Close"].values, 1)),
+                np.abs(hist["Low"].values  - np.roll(hist["Close"].values, 1))
+            )
+        )
+        _atr = float(np.mean(_tr[-14:]))
+
         # 综合建议
-        recommendation = _recommend(market, rs, gamma, gates, current_price)
+        recommendation = _recommend(market, rs, gamma, gates, current_price, _atr)
 
         return jsonify({
             "ok": True,
@@ -144,7 +154,7 @@ def api_analyze():
         return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
 
-def _recommend(market, rs, gamma, gates, price):
+def _recommend(market, rs, gamma, gates, price, atr=None):
     state = market.get("state", "E")
     rs_val = rs.get("rs_rating") or 0
     gamma_signal = gamma.get("signal", False)
@@ -161,6 +171,18 @@ def _recommend(market, rs, gamma, gates, price):
     if rs_val < 50: bear += 1
     if auto_fails > 0: bear += auto_fails * 2
 
+    # ATR 止损/目标（ATR×1.5 止损，ATR×3.0 目标）；无 ATR 时退回固定百分比
+    stop_note = ""
+    if atr and atr > 0:
+        stop  = round(price - atr * 1.5, 2)
+        tgt1  = round(price + atr * 3.0, 2)
+        tgt2  = round(price + atr * 4.5, 2)
+        stop_note = f"（ATR×1.5=${atr*1.5:.2f}）"
+    else:
+        stop  = round(price * 0.90, 2)
+        tgt1  = round(price * 1.25, 2)
+        tgt2  = round(price * 1.40, 2)
+
     if state == "E":
         return _rec("空仓观望", "gray",
             "方向不明，既然涨跌都有可能且无法判断，不如空仓。",
@@ -174,21 +196,24 @@ def _recommend(market, rs, gamma, gates, price):
     if bull >= 6:
         return _rec("积极做多", "green",
             f"大盘{state} + RS={rs_val} + {'Gamma信号确认' if gamma_signal else '期权结构偏多'}，综合信号强。",
-            round(price * 0.90, 2), round(price * 1.25, 2),
+            stop, tgt1,
             "正股 20-30%（凡人修仙中等仓位）",
-            "买入ATM Call" if gamma_signal else "Bull Call Spread")
+            "买入ATM Call" if gamma_signal else "Bull Call Spread",
+            stop_note)
 
     return _rec("小仓试探", "yellow",
         "信号部分确认，轻仓试探，等待财报或技术突破进一步验证。",
-        round(price * 0.90, 2), round(price * 1.15, 2),
+        stop, tgt1,
         "正股 5-10%（轻仓）",
-        "3% 仓位 Bull Call Spread，控制风险")
+        "3% 仓位 Bull Call Spread，控制风险",
+        stop_note)
 
 
-def _rec(action, color, reason, stop, target, size, options):
+def _rec(action, color, reason, stop, target, size, options, stop_note=""):
     return {
         "action": action, "color": color, "reason": reason,
-        "stop_loss": stop, "target": target,
+        "stop_loss": stop, "stop_note": stop_note,
+        "target": target,
         "position_size": size, "options_strategy": options,
     }
 
@@ -377,13 +402,13 @@ def api_watchlist():
             except Exception:
                 pass
 
-            # 九关快速通过计数（仅检测自动关卡 5/6/7）
+            # 九关快速通过计数（排除手动关卡 4/5/6/7，计所有自动评估关卡）
             try:
                 info  = get_stock_info(ticker)
                 gates = nine_gates_check(info, rs_data if rs_val else {}, market)
-                auto_gates = [g for g in gates if g["gate"] in (5, 6, 7)]
+                auto_gates = [g for g in gates if g["status"] != "manual"]
                 pass_count = sum(1 for g in auto_gates if g["status"] == "pass")
-                fail_count = sum(1 for g in auto_gates if g["status"] == "fail")
+                fail_count = sum(1 for g in auto_gates if g["status"] in ("fail", "warn"))
             except Exception:
                 pass_count = fail_count = None
 

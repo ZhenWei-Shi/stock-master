@@ -492,6 +492,7 @@ def _arbitrator(bull: dict, bear: dict, risk: dict, direction: str) -> dict:
     risk_pts  = bear.get("risk_pts", 0)
 
     # 区分个股特有风险（高权重）与行业背景风险（低权重），避免线性累积偏向 WAIT
+    # ⚠️ 权重系数（high×5/mid×2）为经验值，无统计校准；仅供参考，勿视为精确置信度
     high_risk = bear.get("risk_pts_high", 0)
     mid_risk  = bear.get("risk_pts_mid",  0)
     low_risk  = risk_pts - high_risk - mid_risk

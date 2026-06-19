@@ -1754,10 +1754,11 @@ function renderChain(d) {
   document.getElementById('chain-layers').innerHTML = d.layers.slice().reverse().map(layer => {
     const isHot = layer.layer === d.hot_layer;
     const isNext = layer.layer === d.next_layer;
-    const avgOut = layer.tickers_data.length
-      ? (layer.tickers_data.reduce((s,t) => s+(t.outperform||0), 0) / layer.tickers_data.length).toFixed(1)
+    const _outSum = layer.tickers_data.length
+      ? layer.tickers_data.reduce((s,t) => s+(typeof t.outperform==='number'&&!isNaN(t.outperform)?t.outperform:0), 0)
       : null;
-    const outColor = avgOut > 0 ? 'var(--green)' : avgOut < 0 ? 'var(--red)' : 'var(--muted)';
+    const avgOut = _outSum !== null ? (_outSum / layer.tickers_data.length) : null;
+    const outColor = avgOut!==null&&avgOut>0 ? 'var(--green)' : avgOut!==null&&avgOut<0 ? 'var(--red)' : 'var(--muted)';
     const extraClass = isHot ? 'layer-hot' : isNext ? 'layer-next' : '';
     const tagHtml = isHot ? '<span class="layer-tag tag-hot">🔥 机构热层</span>'
                   : isNext ? '<span class="layer-tag tag-next">🎯 下一个卡脖子</span>' : '';
@@ -1918,7 +1919,7 @@ async function loadIVAnalytics(ticker, expiry) {
 
     document.getElementById('iv-analytics-content').innerHTML = `
       <div class="iv-metric">
-        <div class="iv-label">预期移动幅度（到期）</div>
+        <div class="iv-label">预期移动幅度（到期，B-S 估算）</div>
         <div class="iv-value">${em.expected_move ? '±$'+em.expected_move : '—'}</div>
         <div class="iv-sub">${em.expected_move_pct ? '±'+em.expected_move_pct+'%' : ''}
           ${em.upside ? ' · $'+em.downside+' ~ $'+em.upside : ''}</div>

@@ -37,9 +37,10 @@ os.makedirs(_DATA, exist_ok=True)
 CACHE_TTL_HOURS     = 4       # 缓存有效期
 SECTOR_TOP_N        = 3       # 前N名视为"热板块"
 SECTOR_BOTTOM_N     = 3       # 后N名视为"冷板块"
+# 热度公式：近似 IBD RS 加权逻辑，非官方算法（IBD 用4季度分段加权）
 RS_1M_WEIGHT        = 0.6     # 1个月超额收益权重
 RS_3M_WEIGHT        = 0.4     # 3个月超额收益权重
-ACCEL_BONUS         = 3       # 加速板块加分（1M RS > 3M RS）
+ACCEL_BONUS         = 3       # 加速板块加分（1M RS > 3M月均值）
 # ══════════════════════════════════════════════════════════════
 
 # 14 个追踪标的：11 大 GICS + 3 高优先子行业

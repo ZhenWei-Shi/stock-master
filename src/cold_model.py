@@ -84,6 +84,8 @@ VWAP_LONG_PREMIUM_MAX       = 5.0      # 多头：最大溢价VWAP%
 VWAP_LONG_DISCOUNT_MIN      = -3.0     # 多头：最大折价VWAP%
 
 # ── 入场评分门限 ─────────────────────────────────────────────
+# ⚠️ 九关各维度权重（趋势25/RSI15/量能15/…）及下方门限为经验设定，无统计校准
+# 正确做法：对历史信号做 Logistic 回归，用 AUC/KS 验证各指标判别力后重新分配
 GO_THRESHOLD_STD            = 75       # 标准模式入场分
 GO_THRESHOLD_AGG            = 65       # 激进模式入场分
 WAIT_THRESHOLD_STD          = 55       # 标准模式等待分
@@ -269,12 +271,11 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
 
     if direction == "LONG":
         if aggressive_mode:
-            # 激进模式：35-80（含动量突破黄金区间）
-            # Minervini数据：最强突破发生在RSI从65推向80+时，不应屏蔽
+            # 激进模式：35-80（经验区间，无独立统计支撑）
             rsi_zone_ok  = 35 <= rsi_now <= 80
-            rsi_momentum = 60 <= rsi_now <= 80   # 动量强烈
+            rsi_momentum = 60 <= rsi_now <= 80   # 动量偏强区间
             rsi_note = (
-                f"RSI={rsi_now:.1f}，{'动量突破区间(60-80)，Minervini强势信号' if rsi_momentum else '合理做多区间(35-80)'}"
+                f"RSI={rsi_now:.1f}，{'动量偏强区间(60-80)' if rsi_momentum else '合理做多区间(35-80)'}"
                 if rsi_zone_ok else
                 f"RSI={rsi_now:.1f}，{'极度超买>80，短期追高风险大' if rsi_now > 80 else '超卖<35，等待底部企稳'}"
             )

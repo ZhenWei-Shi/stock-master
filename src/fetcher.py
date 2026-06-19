@@ -9,7 +9,7 @@ def get_stock_history(ticker: str, period: str = "1y") -> pd.DataFrame:
 def get_stock_info(ticker: str) -> dict:
     info = yf.Ticker(ticker).info
     hist = get_stock_history(ticker, "5d")
-    current = float(hist["Close"].iloc[-1]) if not hist.empty else None
+    current = float(hist["Close"].iloc[-1]) if not hist.empty else None  # 昨日收盘价，非盘中实时
     return {
         "name": info.get("longName", ticker),
         "sector": info.get("sector", "—"),
@@ -18,7 +18,7 @@ def get_stock_info(ticker: str) -> dict:
         "pe_ratio": info.get("trailingPE"),
         "52w_high": info.get("fiftyTwoWeekHigh"),
         "52w_low": info.get("fiftyTwoWeekLow"),
-        "current_price": current,
+        "current_price": current,  # 字段名沿用旧名；实为上一交易日收盘，非实时
         "institutional_ownership": info.get("institutionPercentHeld"),
         "short_ratio": info.get("shortRatio"),
         "avg_volume": info.get("averageVolume"),
