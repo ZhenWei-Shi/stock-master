@@ -20,14 +20,16 @@
 
 import os
 import json
+import threading
 import numpy as np
 from datetime import datetime
 import pytz
 
-ET      = pytz.timezone("America/New_York")
-_DATA   = os.path.join(os.path.dirname(__file__), "..", "data")
-_FB_LOG = os.path.join(_DATA, "feedback_log.json")
-_PATTERN= os.path.join(_DATA, "learned_patterns.json")
+ET       = pytz.timezone("America/New_York")
+_DATA    = os.path.join(os.path.dirname(__file__), "..", "data")
+_FB_LOG  = os.path.join(_DATA, "feedback_log.json")
+_PATTERN = os.path.join(_DATA, "learned_patterns.json")
+_FB_LOCK = threading.Lock()  # 防止开仓/平仓并发写入 feedback_log.json
 
 os.makedirs(_DATA, exist_ok=True)
 
@@ -94,17 +96,14 @@ def record_entry_signals(trade_id: str, ticker: str,
 
 def record_exit_result(trade_id: str, pnl_pct: float,
                         hold_days: int, exit_reason: str = ""):
-    """平仓后调用，填写结果。"""
-    data = _load_feedback()
-    for entry in data:
-        if entry.get("trade_id") == trade_id:
-            entry["result"]       = "win" if pnl_pct > 0 else "loss"
-            entry["pnl_pct"]      = round(pnl_pct, 2)
-            entry["hold_days"]    = hold_days
-            entry["exit_reason"]  = exit_reason
-            entry["exit_time"]    = str(datetime.now(ET))
-            break
-    _save_feedback(data)
+    """平仓后调用，填写结果（线程安全，原子更新）。"""
+    _update_feedback(trade_id, {
+        "result":      "win" if pnl_pct > 0 else "loss",
+        "pnl_pct":     round(pnl_pct, 2),
+        "hold_days":   hold_days,
+        "exit_reason": exit_reason,
+        "exit_time":   str(datetime.now(ET)),
+    })
 
 
 # ─────────────────────────────────────────────────────────────
@@ -323,11 +322,27 @@ def _load_feedback() -> list:
 
 
 def _save_feedback(data: list):
-    with open(_FB_LOG, "w", encoding="utf-8") as f:
+    """原子写入：先写 .tmp 再 os.replace，防止进程崩溃导致 JSON 截断。"""
+    tmp = _FB_LOG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    os.replace(tmp, _FB_LOG)
 
 
 def _append_feedback(entry: dict):
-    data = _load_feedback()
-    data.append(entry)
-    _save_feedback(data)
+    """线程安全追加：加锁保证开仓/平仓并发时不互相覆盖。"""
+    with _FB_LOCK:
+        data = _load_feedback()
+        data.append(entry)
+        _save_feedback(data)
+
+
+def _update_feedback(trade_id: str, updates: dict):
+    """线程安全更新指定条目：加锁保证读-改-写原子性。"""
+    with _FB_LOCK:
+        data = _load_feedback()
+        for entry in data:
+            if entry.get("trade_id") == trade_id:
+                entry.update(updates)
+                break
+        _save_feedback(data)

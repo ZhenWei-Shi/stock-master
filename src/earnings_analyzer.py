@@ -162,10 +162,14 @@ def analyze_eps_acceleration(ticker: str) -> dict:
                 )
 
         # 加速信号评级
+        # FP1-4 修复：acceleration_count=2 表示"两段加速"（2次相邻季度比较各有加速）
+        # O'Neil 真正"三段连续加速"需要4个增速数据点，产生3次相邻比较各自加速
+        # 此处改为正确表述：count=2 → 两段加速，count>=3 → 三段或更多
         if acceleration_count >= 2 and valid_rates:
             latest_rate = valid_rates[0][1]
             accel_signal = (
-                "🔥 三段连续加速" if acceleration_count >= 2 and latest_rate > 25 else
+                "🔥 三段或以上连续加速（CANSLIM最强信号）" if acceleration_count >= 3 and latest_rate > 25 else
+                "✅ 两段连续加速" if acceleration_count == 2 else
                 "✅ 加速中"
             )
             accel_grade = "A" if latest_rate > 50 else "B"
@@ -337,12 +341,17 @@ def analyze_pead(ticker: str) -> dict:
                 if len(after) < 5:
                     continue
 
-                price_d0   = float(after["Close"].iloc[0])
+                # FP0-2 修复：财报通常盘后发布，当日涨跌是"二元博弈"非漂移
+                # PEAD 从 T+1 开盘价开始计量（Ball & Brown 1968 原始定义）
+                # after.iloc[0] 是财报当日，after.iloc[1] 是 T+1（需至少2行）
+                if len(after) < 2:
+                    continue
+                price_d0   = float(after["Open"].iloc[1])   # T+1 开盘（漂移起点）
                 price_d30  = float(after["Close"].iloc[-1])
                 drift_30d  = (price_d30 - price_d0) / price_d0 * 100
 
-                # 前5天和后5天（捕捉初始反应）
-                price_d5   = float(after["Close"].iloc[min(4, len(after)-1)])
+                # 前5天和后5天（从T+1开盘起计5天）
+                price_d5   = float(after["Close"].iloc[min(5, len(after)-1)])
                 initial_5d = (price_d5 - price_d0) / price_d0 * 100
 
                 pead_records.append({

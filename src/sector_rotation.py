@@ -183,6 +183,10 @@ def fetch_sector_rankings(force: bool = False) -> dict:
     if not force and not _cache_stale(cache) and cache.get("rankings"):
         return cache
 
+    # EP1-1：强制刷新时同步清除 ticker→ETF 的 lru_cache，防止公司行业分类永久过期
+    if force:
+        get_sector_for_ticker.cache_clear()
+
     all_etfs = list(SECTOR_ETFS.keys()) + ["SPY"]
     try:
         raw = yf.download(
@@ -285,6 +289,10 @@ def get_sector_for_ticker(ticker: str) -> str | None:
     通过 yfinance info 获取 ticker 所属板块 ETF。
     先尝试 industry（精细），再用 sector（粗粒度）。
     结果在进程生命周期内缓存，避免批量扫描时重复 HTTP 请求。
+
+    EP1-1：lru_cache 无 TTL，长期运行时公司行业分类永不刷新。
+    解决方案：fetch_sector_rankings(force=True) 时调用 cache_clear()，
+    保证强制刷新板块数据时同步清除 ticker→ETF 映射缓存。
     """
     try:
         info     = yf.Ticker(ticker).info

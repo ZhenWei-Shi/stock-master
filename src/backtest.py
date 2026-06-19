@@ -43,7 +43,7 @@ RSI_AGG_MIN, RSI_AGG_MAX    = 35, 80
 MACD_FAST, MACD_SLOW        = 12, 26
 MACD_SIGNAL                 = 9
 ATR_PERIOD                  = 14
-ATR_STOP_MULT               = 2.0      # 回测用ATR×2（含更多余量）
+ATR_STOP_MULT               = 1.5      # 与 cold_model.ATR_STOP_MULT 保持一致，确保回测结果可比
 MA_SHORT, MA_MID             = 20, 50
 
 # ── 入场门限 ─────────────────────────────────────────────────
@@ -323,11 +323,21 @@ def run_backtest(
             exit_reason = None
             hold_days   = (entry_day - pos["entry_day"]).days
 
-            if day_low <= pos["stop_loss"]:
+            stop_hit   = day_low  <= pos["stop_loss"]
+            target_hit = day_high >= pos["target"]
+            if stop_hit and target_hit:
+                # FP1-3 修复：同日 High 触目标 + Low 触止损时，优先止损产生悲观偏差
+                # 学术标准：概率各 50%，随机决定（消除系统性方向偏差）
+                import random
+                if random.random() < 0.5:
+                    exit_price, exit_reason = pos["stop_loss"], "止损（同日双触）"
+                else:
+                    exit_price, exit_reason = pos["target"], "目标（同日双触）"
+            elif stop_hit:
                 # 触及止损：用止损价（保守）
                 exit_price  = pos["stop_loss"]
                 exit_reason = "止损"
-            elif day_high >= pos["target"]:
+            elif target_hit:
                 # 触及目标：用目标价
                 exit_price  = pos["target"]
                 exit_reason = "目标"
@@ -423,6 +433,10 @@ def run_backtest(
             if stop_dist <= 0:
                 continue
             shares      = max(1, int(risk_dollar / stop_dist))
+            # MP2-2：账户亏损后最小仓位（1股）的实际风险可能超过风险上限
+            # 若 1股×止损距离 > 风险预算 × 2 则跳过此信号（防止亏损后被迫超风险入场）
+            if stop_dist > risk_dollar * 2:
+                continue
             cost        = shares * entry_price
             max_pos_val = total_value * 0.50
 

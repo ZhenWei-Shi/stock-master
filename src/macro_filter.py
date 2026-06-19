@@ -94,6 +94,27 @@ _FOMC_DATES_2026 = [
 ]
 _ALL_FOMC = set(_FOMC_DATES_2025 + _FOMC_DATES_2026)
 
+# P2-6 告警：FOMC 日历硬编码至 2026 年底，2027 年后自动失效
+# 请每年 12 月初在 _FOMC_DATES_20XX 中补入下一年日历
+_FOMC_MAX_YEAR = 2026
+_FOMC_EXPIRY_WARNED = False
+
+def _check_fomc_calendar_expiry():
+    """如果当前年份超出 FOMC 日历覆盖范围，打印警告（每次进程启动最多一次）。"""
+    global _FOMC_EXPIRY_WARNED
+    if _FOMC_EXPIRY_WARNED:
+        return
+    current_year = date.today().year
+    if current_year > _FOMC_MAX_YEAR:
+        import warnings
+        warnings.warn(
+            f"[macro_filter] FOMC 日历仅覆盖至 {_FOMC_MAX_YEAR} 年，"
+            f"当前 {current_year} 年 FOMC 日期未配置，宏观门关将无法拦截 FOMC 窗口！"
+            f"请在 macro_filter.py 中添加 _FOMC_DATES_{current_year}。",
+            RuntimeWarning, stacklevel=3,
+        )
+    _FOMC_EXPIRY_WARNED = True
+
 # BLS 官方 CPI 发布日（提前锁定，避免"第2个周三"算法误差）
 _CPI_DATES_2025 = [
     "2025-01-15", "2025-02-12", "2025-03-12", "2025-04-10",
@@ -683,6 +704,7 @@ def macro_gate_check(ticker: str) -> dict:
       bonus:    0-20  → 加分（宏观有利该股）
       reason:   说明
     """
+    _check_fomc_calendar_expiry()  # P2-6：检测 FOMC 日历是否已过期
     try:
         snap_path = os.path.join(_DATA, "macro_snapshot.json")
         if not os.path.exists(snap_path):

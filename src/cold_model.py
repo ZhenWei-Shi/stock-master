@@ -295,24 +295,34 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     vol   = hist_1y["Volume"]
     vol_m20 = float(vol.rolling(20).mean().iloc[-1])
     vol_today = float(vol.iloc[-1])
-    vol_ratio = vol_today / vol_m20 if vol_m20 > 0 else 1.0
+
+    # MP2-3：vol_m20=0（停牌/数据缺失）时应拒绝，不能默认量比=1.0 静默通过
+    if vol_m20 <= 0:
+        gates["volume"] = {
+            "pass": False,
+            "note": "20日均量为0，疑似停牌或数据缺失，禁止入场",
+        }
+        vol_ratio = 0.0
+    else:
+        vol_ratio = vol_today / vol_m20
 
     price_chg = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100) if len(close) >= 2 else 0
 
-    if direction == "LONG":
-        vol_ok = vol_ratio >= 0.8 and not (price_chg < -2 and vol_ratio > 2)
-        gates["volume"] = {
-            "pass": vol_ok,
-            "note": (f"量比{vol_ratio:.1f}x，{'放量上涨' if price_chg > 0 else '量比正常'}"
-                     if vol_ok else
-                     f"量比{vol_ratio:.1f}x + 价格跌{price_chg:.1f}%，放量下跌，禁止做多"),
-        }
-    else:
-        vol_ok = vol_ratio >= 0.8
-        gates["volume"] = {
-            "pass": vol_ok,
-            "note": f"量比{vol_ratio:.1f}x",
-        }
+    if vol_m20 > 0:  # 仅在数据有效时设置 volume gate
+        if direction == "LONG":
+            vol_ok = vol_ratio >= 0.8 and not (price_chg < -2 and vol_ratio > 2)
+            gates["volume"] = {
+                "pass": vol_ok,
+                "note": (f"量比{vol_ratio:.1f}x，{'放量上涨' if price_chg > 0 else '量比正常'}"
+                         if vol_ok else
+                         f"量比{vol_ratio:.1f}x + 价格跌{price_chg:.1f}%，放量下跌，禁止做多"),
+            }
+        else:
+            vol_ok = vol_ratio >= 0.8
+            gates["volume"] = {
+                "pass": vol_ok,
+                "note": f"量比{vol_ratio:.1f}x",
+            }
 
     # ── Gate F：VWAP 位置 ────────────────────────────────
     # VWAP 是每日09:30重置的日内指标。跨多天的累积VWAP无统计意义。
@@ -421,15 +431,15 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                     "pass": True,
                     "note": f"财报已过（{abs(days_to_earn)}天前），等待下季度日历更新",
                 }
-            elif days_to_earn <= 3:
-                gates["earnings_blackout"] = {
-                    "pass": False,
-                    "note": f"财报在 {days_to_earn} 天后！禁止建仓（不赌二元事件）",
-                }
             elif days_to_earn <= 7:
                 gates["earnings_blackout"] = {
+                    "pass": False,
+                    "note": f"财报在 {days_to_earn} 天后！禁止建仓（摆动3-10天持仓必跨财报，不赌二元事件）",
+                }
+            elif days_to_earn <= 14:
+                gates["earnings_blackout"] = {
                     "pass": "warn",
-                    "note": f"财报在 {days_to_earn} 天后，建议等财报结果再行动",
+                    "note": f"财报在 {days_to_earn} 天后，摆动持仓有概率跨过财报，建议缩小仓位或等财报后再入场",
                 }
             else:
                 gates["earnings_blackout"] = {
@@ -670,18 +680,25 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         pos_size       = shares * price
         actual_risk    = shares * stop_d
 
-        # 期望值计算：优先用实测胜率（≥15笔），否则用假设常量
-        rr = EV_RR_RATIO
+        # 期望值计算：优先用实测胜率/盈亏比（≥15笔），否则用假设常量
+        # P2-4 修复：RR 改用实测 avg_win/avg_loss，不再硬编码 EV_RR_RATIO=3.0
+        rr = EV_RR_RATIO  # 默认值
         try:
             from .paper_trading import performance_report as _pr_fn
             _pr  = _pr_fn()
             _wr  = _pr.get("kelly", {}).get("actual_win_rate")
+            _rr  = _pr.get("kelly", {}).get("actual_rr_ratio")
             _n   = _pr.get("summary", {}).get("total_trades", 0)
-            win_rate = (_wr / 100) if (_wr is not None and _n >= 15) else EV_WIN_RATE
-            _ev_src  = f"实测胜率{_wr:.0f}%/{_n}笔" if (_wr is not None and _n >= 15) else f"假设胜率{EV_WIN_RATE*100:.0f}%（样本<15笔）"
+            if _wr is not None and _n >= 15:
+                win_rate = _wr / 100
+                rr = _rr if (_rr is not None and _rr > 0) else EV_RR_RATIO
+                _ev_src  = f"实测胜率{_wr:.0f}%/RR={rr:.1f}（{_n}笔）"
+            else:
+                win_rate = EV_WIN_RATE
+                _ev_src  = f"假设胜率{EV_WIN_RATE*100:.0f}%/RR={EV_RR_RATIO}（样本{_n if _n else 0}<15笔）"
         except Exception:
             win_rate = EV_WIN_RATE
-            _ev_src  = f"假设胜率{EV_WIN_RATE*100:.0f}%"
+            _ev_src  = f"假设胜率{EV_WIN_RATE*100:.0f}%/RR={EV_RR_RATIO}"
         ev     = win_rate * (rr * actual_risk) - (1 - win_rate) * actual_risk
         ev_pct = ev / portfolio * 100
 
@@ -692,7 +709,10 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         entry_plan = {
             "direction":          direction,
             "mode":               "激进动量" if aggressive_mode else "标准",
+            # P0-1 修复：明确标注入场价为昨收参考价，T+1 开盘价可能大幅偏离（隔夜缺口）
+            # 操作人员在 T+1 开盘后必须以实际开盘价重新核算仓位和止损距离
             "entry_price":        round(price, 2),
+            "entry_price_note":   "⚠️ 此为昨日收盘参考价。T+1开盘后务必用实际开盘价重新核算仓位/止损/目标。",
             "stop_loss":          stop_price,
             "target_1":           target1,
             "target_2":           target2,
@@ -706,6 +726,7 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             "trade_type":         "摆动交易（PDT安全）" if not is_intraday else "日内交易",
             "expected_value_usd": round(ev, 2),
             "expected_value_pct": round(ev_pct, 2),
+            "ev_source":          _ev_src,
             "rule":               rule_note,
             "exit_rules": [
                 f"止损：价格{'跌破' if direction=='LONG' else '涨破'} ${stop_price}，立即市价清仓，不等反弹",
