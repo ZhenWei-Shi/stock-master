@@ -554,16 +554,20 @@ def format_telegram_report() -> str:
     lines = ["📊 <b>板块轮动快报</b>\n"]
     lines.append(f"更新时间：{str(rpt.get('updated_at',''))[:16]}\n")
 
-    lines.append("🔥 <b>当前热门板块（前3）</b>")
-    for r in rpt.get("top3_hot", []):
-        accel = "↑加速" if r["accel"] else ""
-        lines.append(f"  [{r['rank']}] {r['name']}（{r['etf']}）"
-                     f"  1M:{r['rs_1m']:+.1f}%  3M:{r['rs_3m']:+.1f}%  {accel}")
+    top3_hot = rpt.get("top3_hot", [])
+    if top3_hot:
+        lines.append("🔥 <b>当前热门板块（前3）</b>")
+        for r in top3_hot:
+            accel = "↑加速" if r["accel"] else ""
+            lines.append(f"  [{r['rank']}] {r['name']}（{r['etf']}）"
+                         f"  1M:{r['rs_1m']:+.1f}%  3M:{r['rs_3m']:+.1f}%  {accel}")
 
-    lines.append("\n❄️ <b>资金流出板块（后3）</b>")
-    for r in rpt.get("bottom3_cold", []):
-        lines.append(f"  [{r['rank']}] {r['name']}（{r['etf']}）"
-                     f"  1M:{r['rs_1m']:+.1f}%  3M:{r['rs_3m']:+.1f}%")
+    bottom3_cold = rpt.get("bottom3_cold", [])
+    if bottom3_cold:
+        lines.append("\n❄️ <b>资金流出板块（后3）</b>")
+        for r in bottom3_cold:
+            lines.append(f"  [{r['rank']}] {r['name']}（{r['etf']}）"
+                         f"  1M:{r['rs_1m']:+.1f}%  3M:{r['rs_3m']:+.1f}%")
 
     if rpt.get("accelerating"):
         accel_names = "、".join(r["name"] for r in rpt["accelerating"])

@@ -692,10 +692,13 @@ def macro_gate_check(ticker: str) -> dict:
             snap = json.load(f)
 
         # 检查快照是否太旧（超过2小时重新生成）
+        # 使用 aware-to-aware 比较，避免 UTC 服务器与 ET 快照时间错位（同 sector_rotation._cache_stale）
         gen_at = snap.get("generated_at", "")
         if gen_at:
             try:
-                age_h = (datetime.now() - datetime.fromisoformat(gen_at[:19])).total_seconds() / 3600
+                updated = datetime.fromisoformat(str(gen_at))  # 保留时区信息 (-04:00)
+                now_et  = datetime.now(ET)
+                age_h   = (now_et - updated).total_seconds() / 3600
                 if age_h > 2:
                     return {"block": False, "penalty": 0, "bonus": 0,
                             "reason": f"宏观快照已{age_h:.1f}小时，建议刷新"}

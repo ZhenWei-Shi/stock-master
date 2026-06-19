@@ -421,10 +421,12 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                     + ("↑" if s["accel"] else "")
                     for s in dyn.get("sectors_used", [])
                 )
+                sector_add_display = dyn['sector_add']
+                add_suffix = f"（共{len(sector_add_display)}只）" if len(sector_add_display) > 10 else ""
                 send_telegram(
                     f"📋 <b>今日扫描列表（{dyn['total']}只）</b>\n\n"
                     f"核心持续：{', '.join(dyn['core'][:8]) or '无'}\n"
-                    f"板块追加：{', '.join(dyn['sector_add'][:10])}\n\n"
+                    f"板块追加{add_suffix}：{', '.join(sector_add_display[:10])}\n\n"
                     f"🎯 当前热门板块：\n{sector_info}"
                 )
             print(f"[Sector] 动态 watchlist：{dyn['total']} 只（{dyn.get('note','')}）")

@@ -772,7 +772,7 @@ def scan_tickers(tickers: list, portfolio: float = 100_000,
         "wait":        wait_list[:5],
         "abort":       abort_list[:5],
         "errors":      errors,
-        "note":        "分数≥75=GO（可入场），55-74=WAIT（等待），<55或有红灯=ABORT",
+        "note":        "分数≥75=GO（标准）/≥65=GO（激进，$5k以下自动启用），<门槛或有红灯=ABORT",
     }
 
 
