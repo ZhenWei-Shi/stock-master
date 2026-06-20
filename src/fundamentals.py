@@ -327,9 +327,9 @@ def get_earnings_reaction(ticker: str) -> dict:
                     "date":     q_date,
                     "day_chg":  round((earn - prev) / prev * 100, 2) if prev else None,
                     "next_chg": round((nxt  - earn) / earn  * 100, 2) if nxt  else None,
-                    "eps_est":  round(float(eps_e), 3) if eps_e is not None else None,
-                    "eps_act":  round(float(eps_a), 3) if eps_a is not None else None,
-                    "beat":     bool(float(eps_a) > float(eps_e)) if (eps_e is not None and eps_a is not None) else None,
+                    "eps_est":  round(float(eps_e), 3) if _valid(eps_e) else None,
+                    "eps_act":  round(float(eps_a), 3) if _valid(eps_a) else None,
+                    "beat":     bool(float(eps_a) > float(eps_e)) if (_valid(eps_e) and _valid(eps_a)) else None,
                 })
             except Exception:
                 continue

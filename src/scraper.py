@@ -301,7 +301,7 @@ def get_earnings_analysis(ticker: str) -> dict:
             eps_act = row.get("epsActual")
             date = str(idx)[:10]  # date是index，不是名为"quarter"的列
 
-            if eps_est is None or eps_act is None:
+            if pd.isna(eps_est) or pd.isna(eps_act):
                 continue
 
             eps_est_f = float(eps_est)
