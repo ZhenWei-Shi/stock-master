@@ -75,8 +75,8 @@ def _load_cik_map() -> dict:
         if time.time() - mtime < CIK_CACHE_DAYS * 86400:
             with open(_CIK_FILE, "r") as f:
                 return json.load(f)
-    except OSError:
-        pass  # 文件不存在，继续下载
+    except (OSError, ValueError):
+        pass  # 文件不存在或JSON损坏，继续下载
 
     url = "https://www.sec.gov/files/company_tickers.json"
     try:

@@ -1195,10 +1195,10 @@ def api_debate_with_cold():
 def api_paper_init():
     """初始化模拟盘账户 POST {account: 2000, mode: "paper", label: "激进账户"}"""
     body    = request.get_json(silent=True) or {}
-    account = float(body.get("account", 2000))
-    mode    = body.get("mode", "paper")
-    label   = body.get("label", "默认账户")
     try:
+        account = float(body.get("account") or 2000)
+        mode    = body.get("mode", "paper")
+        label   = body.get("label", "默认账户")
         return jsonify(init_account(account, mode, label))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
