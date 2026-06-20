@@ -212,7 +212,11 @@ def run_quant_model(ticker: str, portfolio_size: float = 100_000,
             elif cal is not None and hasattr(cal,'columns') and "Earnings Date" in cal.columns:
                 ne = cal["Earnings Date"].iloc[0]
             if ne:
-                days = (pd.Timestamp(ne).tz_localize(None) - pd.Timestamp(now.replace(tzinfo=None))).days
+                _ne_ts = pd.Timestamp(ne)
+                # 统一转为无时区再比较（保留日期语义，去掉时区歧义）
+                if _ne_ts.tzinfo is not None:
+                    _ne_ts = _ne_ts.tz_convert(ET).tz_localize(None)
+                days = (_ne_ts - pd.Timestamp(now.replace(tzinfo=None))).days
                 if 0 <= days <= 3:
                     filters["earnings"] = {"pass": False, "reason": f"财报在 {days} 天后，黑名单期"}
                 else:

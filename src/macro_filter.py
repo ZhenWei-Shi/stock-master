@@ -98,12 +98,14 @@ _ALL_FOMC = set(_FOMC_DATES_2025 + _FOMC_DATES_2026)
 # 请每年 12 月初在 _FOMC_DATES_20XX 中补入下一年日历
 _FOMC_MAX_YEAR = 2026
 _FOMC_EXPIRY_WARNED = False
+_FOMC_EXPIRY_WARNED_LOCK = __import__("threading").Lock()
 
 def _check_fomc_calendar_expiry():
     """如果当前年份超出 FOMC 日历覆盖范围，打印警告（每次进程启动最多一次）。"""
     global _FOMC_EXPIRY_WARNED
-    if _FOMC_EXPIRY_WARNED:
-        return
+    with _FOMC_EXPIRY_WARNED_LOCK:
+        if _FOMC_EXPIRY_WARNED:
+            return
     current_year = date.today().year
     if current_year > _FOMC_MAX_YEAR:
         import warnings
@@ -113,7 +115,7 @@ def _check_fomc_calendar_expiry():
             f"请在 macro_filter.py 中添加 _FOMC_DATES_{current_year}。",
             RuntimeWarning, stacklevel=3,
         )
-    _FOMC_EXPIRY_WARNED = True
+        _FOMC_EXPIRY_WARNED = True
 
 # BLS 官方 CPI 发布日（提前锁定，避免"第2个周三"算法误差）
 _CPI_DATES_2025 = [
@@ -131,7 +133,7 @@ _ALL_CPI = set(_CPI_DATES_2025 + _CPI_DATES_2026)
 
 def _this_month_cpi_day() -> Optional[str]:
     """CPI 发布日：优先查官方日历，缺失时退回第2个周三估算"""
-    today = date.today()
+    today = datetime.now(ET).date()  # ET 日期，避免 UTC 晚间跨月
     today_str = str(today)[:7]  # "YYYY-MM"
     for d in _ALL_CPI:
         if d.startswith(today_str):
@@ -150,7 +152,7 @@ def _this_month_cpi_day() -> Optional[str]:
 
 def _this_month_nfp_day() -> Optional[str]:
     """非农就业：每月第1个周五"""
-    today = date.today()
+    today = datetime.now(ET).date()  # ET 日期，避免 UTC 晚间跨月
     first = date(today.year, today.month, 1)
     for d in range(1, 8):
         day = first + timedelta(days=d - 1)
@@ -166,7 +168,7 @@ def get_economic_calendar() -> dict:
     每个事件包含：
       name, date, days_away, risk_level, action
     """
-    today    = date.today()
+    today    = datetime.now(ET).date()  # 用 ET 日期，避免 UTC 服务器晚间跨日误判
     events   = []
     warnings = []
 
@@ -458,12 +460,9 @@ def get_etf_signals() -> dict:
 
         for etf, category in _MACRO_ETF_MAP.items():
             try:
-                if len(etf_list) + 1 == 1:
-                    d = raw
-                else:
-                    if etf not in raw.columns.get_level_values(0):
-                        continue
-                    d = raw[etf].dropna()
+                if etf not in raw.columns.get_level_values(0):
+                    continue
+                d = raw[etf].dropna()
 
                 if len(d) < 2:
                     continue
@@ -520,10 +519,10 @@ def get_etf_signals() -> dict:
             "ok":              True,
             "etf_changes_pct": signals,
             "inferred_themes": inferred_themes,
-            "vix_level":       vix,
+            "vix_level":       vix_level,  # 返回绝对水平，不是涨幅%
             "risk_environment": (
-                "🔴 高风险（VIX飙升）" if vix > 10 else
-                "🟡 中等风险"          if vix > 3  else
+                "🔴 高风险（VIX>25）" if vix_level > 25 else
+                "🟡 中等风险（VIX>18）" if vix_level > 18 else
                 "🟢 低风险"
             ),
         }
@@ -672,8 +671,10 @@ def full_macro_report(watchlist: list = None) -> dict:
         "vix_change_pct":  etf_sigs.get("vix_level", 0),
     }
     snap_path = os.path.join(_DATA, "macro_snapshot.json")
-    with open(snap_path, "w", encoding="utf-8") as f:
+    snap_tmp  = snap_path + ".tmp"
+    with open(snap_tmp, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=False, indent=2, default=str)
+    os.replace(snap_tmp, snap_path)
 
     return {
         "ok":              True,

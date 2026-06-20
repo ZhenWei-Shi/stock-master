@@ -70,11 +70,13 @@ _CIK_FILE = os.path.join(_DATA, "sec_cik_map.json")
 
 def _load_cik_map() -> dict:
     """加载 ticker→CIK 映射，过期则从 EDGAR 重新下载。"""
-    if os.path.exists(_CIK_FILE):
+    try:
         mtime = os.path.getmtime(_CIK_FILE)
         if time.time() - mtime < CIK_CACHE_DAYS * 86400:
             with open(_CIK_FILE, "r") as f:
                 return json.load(f)
+    except OSError:
+        pass  # 文件不存在，继续下载
 
     url = "https://www.sec.gov/files/company_tickers.json"
     try:
@@ -83,8 +85,10 @@ def _load_cik_map() -> dict:
         raw = r.json()
         mapping = {v["ticker"].upper(): str(v["cik_str"]) for v in raw.values()}
         os.makedirs(_DATA, exist_ok=True)
-        with open(_CIK_FILE, "w") as f:
+        tmp = _CIK_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(mapping, f)
+        os.replace(tmp, _CIK_FILE)
         return mapping
     except Exception:
         return {}

@@ -92,13 +92,13 @@ CHAINS = {
                 "layer": 3,
                 "name": "半导体材料",
                 "desc": "光刻胶、CMP材料、特种气体",
-                "tickers": ["ENTG", "CEVA", "UCTT"],
+                "tickers": ["ENTG", "ICHR", "UCTT"],  # CEVA是IP授权非材料，换ICHR(气体输送系统)
             },
             {
                 "layer": 2,
                 "name": "硅片/基底材料",
                 "desc": "300mm硅片及特种衬底",
-                "tickers": ["SUMCO", "SK", "AXTI"],
+                "tickers": ["AXTI", "SILC", "NVMI"],  # SUMCO东交所/SK无美股，换有美股的AXTI(AXT)/SILC/NVMI
             },
             {
                 "layer": 1,
@@ -134,7 +134,7 @@ CHAINS = {
                 "layer": 4,
                 "name": "冷却/散热系统",
                 "desc": "液冷、浸没式冷却解决方案",
-                "tickers": ["GTLS", "COHR", "ALAB"],  # IIVI已改名COHR；LIQT市值~1000万OTC级别，换ALAB
+                "tickers": ["GTLS", "MOD", "ALAB"],  # COHR是光子学公司非冷却，换MOD(Modine Manufacturing 热管理)
             },
             {
                 "layer": 3,
@@ -278,7 +278,7 @@ CHAINS = {
                 "layer": 5,
                 "name": "机器人本体/末端执行",
                 "desc": "手术机器人、协作机器人、测试设备",
-                "tickers": ["ISRG", "TER", "BRKS", "PRCT"],  # MBOT市值~5000万流动性极差，换PRCT(Procept Bio~$2B)
+                "tickers": ["ISRG", "TER", "BRKS", "ABB"],  # PRCT是前列腺手术机器人非工业机器人，换ABB(工业机器人龙头)
             },
             {
                 "layer": 4,
@@ -303,7 +303,7 @@ CHAINS = {
                 "layer": 1,
                 "name": "稀土磁铁/精密材料",
                 "desc": "钕铁硼永磁体（伺服电机核心）、精密轴承钢",
-                "tickers": ["MP", "UUUU", "ARNC"],
+                "tickers": ["MP", "UUUU", "ATI"],  # ARNC是铝材公司非稀土磁材，换ATI(Allegheny精密合金/稀土磁材相关)
             },
         ]
     }

@@ -354,19 +354,24 @@ def _generate_action_items(perf: dict, pos: dict) -> list:
 import os
 _SCAN_LOG = os.path.join(os.path.dirname(__file__), "..", "data", "scan_log.json")
 
+_SCAN_LOG_LOCK = __import__("threading").Lock()
+
 def _save_scan_log(result: dict):
     os.makedirs(os.path.dirname(_SCAN_LOG), exist_ok=True)
-    existing = []
-    if os.path.exists(_SCAN_LOG):
-        try:
-            with open(_SCAN_LOG, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        except Exception:
-            existing = []
-    existing.append(result)
-    existing = existing[-50:]  # 保留最近50次扫描
-    with open(_SCAN_LOG, "w", encoding="utf-8") as f:
-        json.dump(existing, f, ensure_ascii=False, indent=2, default=str)
+    with _SCAN_LOG_LOCK:
+        existing = []
+        if os.path.exists(_SCAN_LOG):
+            try:
+                with open(_SCAN_LOG, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = []
+        existing.append(result)
+        existing = existing[-50:]
+        tmp = _SCAN_LOG + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, _SCAN_LOG)
 
 
 # ─────────────────────────────────────────────────────────────

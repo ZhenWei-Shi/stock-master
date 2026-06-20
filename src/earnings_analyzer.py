@@ -324,7 +324,12 @@ def analyze_pead(ticker: str) -> dict:
         if eh is None or eh.empty or prices.empty:
             return {"ok": False, "reason": "数据不足"}
 
-        prices.index = prices.index.tz_localize(None)
+        import pytz as _pytz
+        _ET = _pytz.timezone("America/New_York")
+        if prices.index.tz is not None:
+            prices.index = prices.index.tz_convert(_ET).tz_localize(None)
+        else:
+            prices.index = prices.index.tz_localize(None)
 
         pead_records = []
         for idx, row in eh.head(6).iterrows():

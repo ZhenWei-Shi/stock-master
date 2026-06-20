@@ -56,7 +56,20 @@ from src.earnings_analyzer import (full_earnings_analysis, get_market_breadth,
 from src.paper_trading import update_trailing_stop
 
 app = Flask(__name__)
-app.json_encoder = _NpEncoder
+# Flask 2.3+ 弃用 json_encoder，改用 json.provider.DefaultJSONProvider
+try:
+    from flask.json.provider import DefaultJSONProvider
+    class _FlaskProvider(DefaultJSONProvider):
+        def default(self, o):
+            if isinstance(o, (np.integer,)):  return int(o)
+            if isinstance(o, (np.floating,)): return None if not np.isfinite(o) else float(o)
+            if isinstance(o, (np.bool_,)):    return bool(o)
+            if isinstance(o, np.ndarray):     return o.tolist()
+            return super().default(o)
+    app.json_provider_class = _FlaskProvider
+    app.json = _FlaskProvider(app)
+except ImportError:
+    app.json_encoder = _NpEncoder  # Flask < 2.3 fallback
 
 
 @app.route("/")
@@ -70,6 +83,7 @@ def api_market():
         snap = get_market_snapshot()
         state = detect_market_state(snap["spy_hist"], snap["vix"])
         state["qqq_price"] = snap["qqq_price"]
+        state["spy_price"] = snap.get("spy_price") or snap.get("current_price")
         return jsonify({"ok": True, "data": state})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
@@ -149,7 +163,7 @@ def api_analyze():
         })
 
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 def _recommend(market, rs, gamma, gates, price, atr=None):
@@ -243,7 +257,7 @@ def api_nine_gates():
             "earnings": earnings,
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/options-full")
@@ -287,7 +301,7 @@ def api_options_full():
             "oi_chart": gamma.get("oi_chart", []),
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 def _auto_gate9(gates, gamma):
@@ -486,7 +500,7 @@ def api_iv_analytics():
         return jsonify({"ok": True, "ticker": ticker, "price": price,
                         "expiry": used_expiry, **data})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/vix-term")
@@ -520,7 +534,7 @@ def api_fundamentals():
             "earnings_reaction": react,
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/market-sentiment")
@@ -532,7 +546,7 @@ def api_market_sentiment():
         sectors = get_sector_rotation()
         return jsonify({"ok": True, "fear_greed": fg, "vix_term": vix, "sectors": sectors})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/top-oi")
@@ -614,7 +628,7 @@ def api_top_oi():
             }
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 def _fmt_exp(exp_str):
@@ -645,7 +659,7 @@ def api_short_term():
         return jsonify({"ok": True, "ticker": ticker, "market": market,
                         "indicators": indicators, "result": result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/chains")
@@ -713,7 +727,7 @@ def api_chain(chain_id):
             "next_layer": next_layer,
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/intraday")
@@ -730,7 +744,7 @@ def api_intraday():
         pre = get_premarket_data(ticker)
         return jsonify({"ok": True, **data, "premarket": pre})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/quant-signal")
@@ -744,7 +758,7 @@ def api_quant_signal():
         result = run_quant_model(ticker, portfolio_size=portfolio)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/backtest")
@@ -760,7 +774,7 @@ def api_backtest():
             return jsonify({"ok": False, "error": result["error"]})
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/institutional-13f")
@@ -776,7 +790,7 @@ def api_institutional_13f():
         data = get_institutional_13f(ticker)
         return jsonify({"ok": True, **data})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/quant-strategies")
@@ -797,7 +811,7 @@ def api_quant_strategies():
                                     compare_tickers=peers if peers else None)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/extended-indicators")
@@ -816,7 +830,7 @@ def api_extended_indicators():
         data = get_extended_indicators(hist)
         return jsonify({"ok": True, "ticker": ticker, **data})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/patterns")
@@ -829,7 +843,7 @@ def api_patterns():
         result = analyze_patterns(ticker)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/earnings-quality")
@@ -842,7 +856,7 @@ def api_earnings_quality():
         result = get_earnings_quality(ticker)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/scalping")
@@ -859,7 +873,7 @@ def api_scalping():
         result = strategy_scalping(ticker, portfolio)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/capital-flow")
@@ -873,7 +887,7 @@ def api_capital_flow():
         result = detect_capital_flow(chain_id)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/sector-rotation")
@@ -892,7 +906,7 @@ def api_sector_rotation():
         result = sector_rotation_report()
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/dealer-delta")
@@ -917,7 +931,7 @@ def api_dealer_delta():
         result = calculate_dealer_delta(calls, puts, current_price)
         return jsonify({"ok": True, "ticker": ticker, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/cold-decision")
@@ -952,7 +966,7 @@ def api_cold_decision():
                                is_intraday=intraday, aggressive_mode=aggressive)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/scan")
@@ -972,7 +986,7 @@ def api_scan():
         result = scan_tickers(tickers, portfolio=portfolio, direction=direction)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/pdt-check")
@@ -1055,7 +1069,7 @@ def api_swing_plan():
         result["atr_14d"]       = round(atr, 2)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/account-check")
@@ -1078,7 +1092,7 @@ def api_account_check():
         result = assess_small_account(account, ticker, contribution)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/stock-suitability")
@@ -1101,7 +1115,7 @@ def api_stock_suitability():
         result = check_stock_suitability(ticker, account)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/position-size")
@@ -1152,7 +1166,7 @@ def api_debate():
         result = generate_trade_debate(ticker, direction, account_value=account)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/debate-with-cold")
@@ -1172,7 +1186,7 @@ def api_debate_with_cold():
         debate = generate_trade_debate(ticker, direction, cold, account)
         return jsonify({"ok": True, "cold_decision": cold, "debate": debate})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 # ── 模拟交易 & Agent ───────────────────────────────────────────
@@ -1295,7 +1309,7 @@ def api_agent_scan():
         result = run_scan(tickers, account, direction, auto_p, mode)
         return jsonify({"ok": True, **result})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/agent/monitor")
@@ -1553,7 +1567,7 @@ def api_backtest_historical():
             mimetype="application/json",
         )
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/api/market/ftd")
@@ -1571,5 +1585,7 @@ def api_market_ftd():
 
 
 if __name__ == "__main__":
+    import os as _os
+    _debug = _os.getenv("FLASK_DEBUG", "0") == "1"
     print("StockRadar 启动中... http://127.0.0.1:5000")
-    app.run(debug=True, port=5000, use_reloader=False)
+    app.run(debug=_debug, port=5000, use_reloader=False)

@@ -190,7 +190,7 @@ def _check_entry_signal(
 
     # Gate: 止损大小（ATR × 2 ÷ 价格 < 12%）
     atr_val    = _atr(high, low, close)
-    stop_dist  = atr_val * 2
+    stop_dist  = atr_val * ATR_STOP_MULT  # 与 cold_model 保持一致（ATR_STOP_MULT=1.5）
     stop_pct   = stop_dist / price * 100
     if stop_pct > 12:
         return {"signal": False, "reason": f"ATR止损距离{stop_pct:.1f}%>12%，风险过大", "score": 0}

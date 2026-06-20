@@ -145,8 +145,10 @@ def _load_cache() -> dict:
 
 def _save_cache(data: dict):
     try:
-        with open(_CACHE, "w", encoding="utf-8") as f:
+        tmp = _CACHE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, _CACHE)
     except OSError:
         pass
 
@@ -251,7 +253,7 @@ def fetch_sector_rankings(force: bool = False) -> dict:
             heat = 0.0     # 完全无数据，排末尾
         rs_1m = rs_1m or 0.0
         rs_3m = rs_3m or 0.0
-        accel = rs_1m > (rs_3m / 3)  # 近1月RS是否优于3月平均月度RS
+        accel = rs_1m > (rs_3m / 3) and rs_1m > 0  # 近1月RS优于3月月均，且本身为正（防熊市误判）
         scores.append({
             "etf":   etf,
             "name":  meta["name"],
@@ -274,7 +276,7 @@ def fetch_sector_rankings(force: bool = False) -> dict:
         "bottom3":    bottom3,
         "hot_etf":    scores[0]["etf"] if scores else None,
         "hot_name":   scores[0]["name"] if scores else None,
-        "updated_at": str(datetime.now(ET)),
+        "updated_at": datetime.now(ET).isoformat(),  # isoformat() 跨Python版本可被 fromisoformat 解析
     }
     _save_cache(result)
     return result
@@ -435,7 +437,7 @@ def _interpret_rotation(rankings: list) -> str:
 # ─────────────────────────────────────────────────────────────
 SECTOR_TICKERS = {
     "XLK":  ["NVDA", "AMD", "AVGO", "MRVL", "ORCL", "MSFT"],
-    "XLF":  ["GS",   "JPM", "V",    "PYPL", "SQ",   "MS"],
+    "XLF":  ["GS",   "JPM", "V",    "AXP",  "BLK",  "MS"],  # PYPL/SQ在yfinance分类为Technology非Financial，换AXP/BLK
     "XLE":  ["OXY",  "DVN", "EOG",  "MPC",  "XOM",  "VLO"],
     "XLV":  ["LLY",  "ISRG","DXCM", "UNH",  "HUM",  "REGN"],
     "XLI":  ["CAT",  "DE",  "GE",   "ROK",  "EMR",  "PWR"],
@@ -447,7 +449,7 @@ SECTOR_TICKERS = {
     "XLU":  ["CEG",  "NEE", "VST",   "EXC",  "CCJ",  "DUK"],  # 核电/公用事业（NNE流动性不足，换 EXC）
     # 子行业 ETF
     "SMH":  ["NVDA", "AMD", "AVGO",  "AMAT", "LRCX", "KLAC"],  # AAOI/AXTI 流动性太低，换高流动性设备股
-    "XBI":  ["MRNA", "REGN","BIIB",  "BMRN", "NTLA", "CRSP"],
+    "XBI":  ["MRNA", "VRTX","BIIB",  "BMRN", "NTLA", "CRSP"],  # REGN已在XLV重复，换VRTX
     "ITA":  ["LMT",  "RTX", "NOC",   "RKLB", "KTOS", "BWXT"],
 }
 

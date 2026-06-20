@@ -121,7 +121,10 @@ def detect_unusual_options(ticker: str) -> dict:
     """
     try:
         tk    = yf.Ticker(ticker)
-        price = float(tk.history(period="1d")["Close"].iloc[-1])
+        _hist1 = tk.history(period="5d")
+        if _hist1.empty:
+            return {"ok": False, "reason": f"{ticker} 无价格数据"}
+        price = float(_hist1["Close"].iloc[-1])
         exps  = tk.options
 
         if not exps:
@@ -274,17 +277,22 @@ def calculate_gex(ticker: str) -> dict:
         gex_by_strike = {}
         call_gex_total = put_gex_total = 0.0
 
+        import pytz as _pytz
+        _ET = _pytz.timezone("America/New_York")
+
         for exp in exps[:3]:  # 只看最近3个到期日
             try:
-                # 最小0.01年（≈3.6天），防止 T→0 时 Gamma 极值爆炸
-                T = max((datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days / 365, 0.01)
+                exp_dt = _ET.localize(datetime.strptime(exp, "%Y-%m-%d").replace(hour=16))
+                T = max((exp_dt - datetime.now(_ET)).total_seconds() / (365 * 86400), 0.01)
                 chain = tk.option_chain(exp)
 
                 for row in chain.calls.itertuples():
                     oi = int(getattr(row, "openInterest", 0) or 0)
                     if oi < 10:
                         continue
-                    g = bs_gamma(price, row.strike, T, hv30)
+                    iv = float(getattr(row, "impliedVolatility", 0) or 0)
+                    sigma = iv if iv > 0.01 else hv30  # 优先用逐档IV，缺失时fallback HV30
+                    g = bs_gamma(price, row.strike, T, sigma)
                     gex = g * oi * 100 * price ** 2  # 美元 Gamma
                     call_gex_total += gex
                     strike = float(row.strike)
@@ -294,7 +302,9 @@ def calculate_gex(ticker: str) -> dict:
                     oi = int(getattr(row, "openInterest", 0) or 0)
                     if oi < 10:
                         continue
-                    g = bs_gamma(price, row.strike, T, hv30)
+                    iv = float(getattr(row, "impliedVolatility", 0) or 0)
+                    sigma = iv if iv > 0.01 else hv30
+                    g = bs_gamma(price, row.strike, T, sigma)
                     gex = g * oi * 100 * price ** 2
                     put_gex_total += gex
                     strike = float(row.strike)
@@ -582,7 +592,10 @@ def institutional_momentum(ticker: str) -> dict:
     try:
         tk    = yf.Ticker(ticker)
         info  = tk.info
-        price = float(tk.history(period="1d")["Close"].iloc[-1])
+        _hist_inst = tk.history(period="5d")
+        if _hist_inst.empty:
+            return {"ok": False, "reason": f"{ticker} 无价格数据"}
+        price = float(_hist_inst["Close"].iloc[-1])
 
         inst_holders = tk.institutional_holders
         major_holders= tk.major_holders

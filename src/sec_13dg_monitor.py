@@ -64,11 +64,12 @@ def _load_seen() -> set:
 
 def _save_seen(seen: set):
     os.makedirs(_DATA, exist_ok=True)
-    # 只保留最近 500 条，防止文件无限增长
     seen_list = sorted(seen)[-500:]
-    with open(_SEEN_FILE, "w") as f:
+    tmp = _SEEN_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump({"seen": seen_list, "updated": str(datetime.now(ET_TZ))},
                   f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _SEEN_FILE)
 
 
 def _ticker_name_map() -> dict:

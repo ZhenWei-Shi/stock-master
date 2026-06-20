@@ -177,8 +177,10 @@ def open_position(ticker: str, shares: int, entry_price: float,
                     "error": (f"已有 {len(open_positions)} 个持仓，达到上限 "
                               f"{MAX_CONCURRENT_POSITIONS}（风控约束），等待现有仓位平仓后再入场")}
 
-        current_exposure = sum(p.get("entry_price", 0) * p.get("shares", 0)
-                               for p in open_positions.values())
+        current_exposure = sum(
+            p.get("current_price", p.get("entry_price", 0)) * p.get("shares", 0)
+            for p in open_positions.values()
+        )
         if acct_value > 0 and (current_exposure + total_cost) / acct_value > MAX_TOTAL_EXPOSURE_PCT:
             used_pct = current_exposure / acct_value * 100
             return {"ok": False,
@@ -353,8 +355,8 @@ def close_position(trade_id: str, exit_price: float,
         opened_at = pos.get("opened_at", "")
         hold_days = 0
         if opened_at:
-            open_dt  = datetime.fromisoformat(str(opened_at)[:19])
-            hold_days= max(0, (datetime.now() - open_dt).days)
+            open_dt_aware = datetime.fromisoformat(str(opened_at))  # 保留时区
+            hold_days = max(0, (datetime.now(ET) - open_dt_aware).days)
         record_exit_result(trade_id, pnl_pct, hold_days, exit_reason)
     except Exception:
         pass
@@ -376,34 +378,35 @@ def update_trailing_stop(trade_id: str, current_price: float,
     """
     trail_pct = max(TRAIL_STOP_MIN, min(TRAIL_STOP_MAX, trail_pct))
     path = _LOG if mode == "paper" else _REAL
-    data = _load(path)
-    pos  = data.get("positions", {}).get(trade_id)
-    if not pos or pos.get("status") != "open":
-        return {"ok": False, "error": "仓位不存在或已关闭"}
+    with _PT_LOCK:
+        data = _load(path)
+        pos  = data.get("positions", {}).get(trade_id)
+        if not pos or pos.get("status") != "open":
+            return {"ok": False, "error": "仓位不存在或已关闭"}
 
-    highest_seen = pos.get("highest_price", pos["entry_price"])
-    if current_price > highest_seen:
-        highest_seen = current_price
-        pos["highest_price"] = round(highest_seen, 4)
+        highest_seen = pos.get("highest_price", pos["entry_price"])
+        if current_price > highest_seen:
+            highest_seen = current_price
+            pos["highest_price"] = round(highest_seen, 4)
 
-    new_stop = round(highest_seen * (1 - trail_pct / 100), 4)
-    old_stop = pos["stop_loss"]
+        new_stop = round(highest_seen * (1 - trail_pct / 100), 4)
+        old_stop = pos["stop_loss"]
 
-    if new_stop > old_stop:
-        pos["stop_loss"]     = new_stop
-        pos["trailing_stop"] = True
-        data["positions"][trade_id] = pos
-        _save(data, path)
-        return {
-            "ok":       True,
-            "updated":  True,
-            "old_stop": old_stop,
-            "new_stop": new_stop,
-            "highest":  highest_seen,
-            "note": f"追踪止损上移至${new_stop:.2f}（最高价${highest_seen:.2f}×{100-trail_pct:.0f}%）",
-        }
-    return {"ok": True, "updated": False, "current_stop": old_stop,
-            "note": "止损无需上移"}
+        if new_stop > old_stop:
+            pos["stop_loss"]     = new_stop
+            pos["trailing_stop"] = True
+            data["positions"][trade_id] = pos
+            _save(data, path)
+            return {
+                "ok":       True,
+                "updated":  True,
+                "old_stop": old_stop,
+                "new_stop": new_stop,
+                "highest":  highest_seen,
+                "note": f"追踪止损上移至${new_stop:.2f}（最高价${highest_seen:.2f}×{100-trail_pct:.0f}%）",
+            }
+        return {"ok": True, "updated": False, "current_stop": old_stop,
+                "note": "止损无需上移"}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -470,11 +473,13 @@ def mark_to_market(mode: str = "paper") -> dict:
     cash = acct.get("cash", 0)
     total_val = round(cash + total_pos_val, 2)
 
-    # 更新历史峰值并持久化，确保两次平仓之间的浮盈高点不丢失
+    # 更新历史峰值并持久化（加锁做二次读-改-写，防止覆盖并发开/平仓写入）
     if total_val > acct.get("peak_value", 0):
-        acct["peak_value"] = total_val
-        data["account"] = acct
-        _save(data, path)
+        with _PT_LOCK:
+            data2 = _load(path)
+            if total_val > data2.get("account", {}).get("peak_value", 0):
+                data2["account"]["peak_value"] = total_val
+                _save(data2, path)
 
     peak  = acct.get("peak_value", total_val)
     dd_pct = (total_val - peak) / peak * 100 if peak > 0 else 0.0
@@ -553,8 +558,8 @@ def performance_report(mode: str = "paper") -> dict:
         # 摆动交易年化系数：基于实际第一笔到现在的时间跨度（不是从1月1日起算）
         trade_times = [t.get("at", "") for t in data.get("trades", []) if t.get("event") == "close" and t.get("at")]
         try:
-            first_dt   = datetime.fromisoformat(str(sorted(trade_times)[0])[:19])
-            span_days  = max((datetime.now() - first_dt).days, 30)
+            first_dt   = datetime.fromisoformat(str(sorted(trade_times)[0]))  # 保留时区
+            span_days  = max((datetime.now(ET) - first_dt).days, 30)
             trades_per_year = total / (span_days / 365)
         except Exception:
             trades_per_year = max(total, 1) * 4  # 无法确定时按年化4×估算
@@ -671,12 +676,13 @@ def reset_circuit_breaker(mode: str = "paper", confirm: bool = False) -> dict:
     if not confirm:
         return {"ok": False, "error": "需要 confirm=True 才能重置熔断器。请先复盘亏损原因再解除。"}
     path = _LOG if mode == "paper" else _REAL
-    data = _load(path)
-    cb   = data.get("account", {}).get("circuit_breaker", {})
-    cb["active"]             = False
-    cb["consecutive_losses"] = 0
-    data["account"]["circuit_breaker"] = cb
-    _save(data, path)
+    with _PT_LOCK:
+        data = _load(path)
+        cb   = data.get("account", {}).get("circuit_breaker", {})
+        cb["active"]             = False
+        cb["consecutive_losses"] = 0
+        data["account"]["circuit_breaker"] = cb
+        _save(data, path)
     return {"ok": True, "note": "熔断器已重置。请确保已完成交易复盘再开始新仓位。"}
 
 

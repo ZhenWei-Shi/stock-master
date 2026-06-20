@@ -1019,7 +1019,7 @@ function renderRec(rec, market) {
   act.textContent = rec.action; act.style.color = c;
   setText('rec-reason', rec.reason);
   setText('rec-act2', rec.action);
-  setText('rec-stop', rec.stop_loss ? `$${rec.stop_loss}（-10%止损线）` : '空仓无需止损');
+  setText('rec-stop', rec.stop_loss ? `$${rec.stop_loss} ${rec.stop_note || ''}` : '空仓无需止损');
   setText('rec-target', rec.target ? `$${rec.target}` : '—');
   setText('rec-size', rec.position_size);
   setText('rec-opts', rec.options_strategy);
@@ -1386,7 +1386,7 @@ async function wlRefresh() {
     const tickers = list.join(',');
     const [wlRes, calRes] = await Promise.all([
       fetch('/api/watchlist?tickers=' + tickers).then(r => r.json()),
-      fetch('/api/earnings-calendar?tickers=' + tickers).then(r => r.json()),
+      fetch('/api/earnings-calendar?tickers=' + tickers).then(r => r.json()).catch(() => ({ events: [] })),
     ]);
 
     loading.style.display = 'none';
@@ -1509,9 +1509,10 @@ async function loadShortTerm() {
 }
 
 function renderShortTerm(d) {
-  const { ticker, result, indicators } = d;
-  const curr = indicators.current;
-  const chart = indicators.chart;
+  const { ticker, result } = d;
+  const indicators = d.indicators || {};
+  const curr = indicators.current || {};
+  const chart = indicators.chart || [];
 
   // 方向标签
   const DIR_CONFIG = {
@@ -1852,7 +1853,7 @@ function renderFundamentals(d) {
         <div style="flex:${sm.sell};background:#c93c37" title="卖出"></div>
         <div style="flex:${sm.strongSell};background:#f85149" title="强卖"></div>
       </div>
-      <div class="info-row"><span class="k">看涨比例</span><span style="color:var(--green)">${sm.bull_pct}%（${sm.strongBuy+sm.buy}/${sm.total}）</span></div>` : ''}
+      <div class="info-row"><span class="k">看涨比例</span><span style="color:var(--green)">${sm.bull_pct}%（${(sm.strongBuy||0)+(sm.buy||0)}/${sm.total}）</span></div>` : ''}
     <div style="margin-top:6px;font-size:12px">
       ${(an.upgrades||[]).slice(0,2).map(u=>`<div style="color:var(--green)">↑ ${u.firm}: ${u.from_grade||'—'} → ${u.to_grade}</div>`).join('')}
       ${(an.downgrades||[]).slice(0,2).map(u=>`<div style="color:var(--red)">↓ ${u.firm}: ${u.from_grade||'—'} → ${u.to_grade}</div>`).join('')}
@@ -1868,7 +1869,7 @@ function renderFundamentals(d) {
     <div class="info-row"><span class="k">近期卖出</span><span style="color:var(--red)">${ins.sells||0} 笔</span></div>
     ${(ins.trades||[]).slice(0,3).map(t=>`
       <div style="font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-        ${t.date} ${t.insider.slice(0,20)} · ${t.transaction}
+        ${t.date} ${(t.insider||'').slice(0,20)} · ${t.transaction||'—'}
       </div>`).join('')}`;
 
   // 财报反应

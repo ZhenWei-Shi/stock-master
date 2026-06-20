@@ -36,7 +36,7 @@ _SPY_CACHE: dict = {"ts": 0, "data": None}
 # ══════════════════════════════════════════════════════════════
 # 评分权重常量
 # ══════════════════════════════════════════════════════════════
-W_GROWTH_MAX     = 40   # 业务增长质量上限（含行业护城河先验加分，最高+8）
+W_GROWTH_MAX     = 48   # 业务增长质量上限（基础40 + 行业护城河最高+8）
 W_BALANCE_MAX    = 25   # 资产负债健康上限
 W_TREND_MAX      = 25   # 长期趋势上限
 W_VALUATION_MAX  = 15   # 估值合理性上限
@@ -52,6 +52,7 @@ MOAT_SECTOR_BONUS = {
     "Consumer Discretionary":4,
     "Industrials":           3,
     "Financial Services":    3,
+    "Consumer Defensive":    3,
     "Basic Materials":       1,
     "Energy":                1,
     "Utilities":             1,
@@ -321,7 +322,9 @@ def _hard_veto(info: dict) -> str | None:
     # 债务炸弹：总负债/总资产 > 80%
     # yfinance 用 debtToEquity 近似，极高值警告
     de = _safe(info.get("debtToEquity"))
-    if de is not None and de > 300:  # D/E > 3.0（百分比形式>300）
+    _sector = info.get("sector", "")
+    _high_leverage_sectors = {"Financial Services", "Real Estate"}  # 银行/REIT高杠杆是商业模式非风险
+    if de is not None and de > 300 and _sector not in _high_leverage_sectors:
         return f"债务/权益 {de/100:.1f}（极高杠杆，破产风险）"
 
     # 严重亏损且无增长迹象：FCF/市值 < -15%（年烧>15%市值）且营收增速低

@@ -537,7 +537,9 @@ def get_earnings_quality(ticker: str) -> dict:
 
         score += margin_score
         if margin_score >= 8:
-            signals.append(f"利润率优秀（毛利{float(gross_m)*100:.0f}% / 经营{float(op_m)*100:.0f}%）")
+            gm_str = f"{float(gross_m)*100:.0f}%" if gross_m is not None else "—"
+            om_str = f"{float(op_m)*100:.0f}%"   if op_m   is not None else "—"
+            signals.append(f"利润率优秀（毛利{gm_str} / 经营{om_str}）")
         elif margin_score >= 4:
             signals.append(f"利润率尚可")
         dimensions["margins"] = {

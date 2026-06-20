@@ -458,6 +458,9 @@ def handle_command(text: str):
         if not ticker_arg:
             send("用法：/logexec NVDA 142.00 143.50  或  /logskip NVDA 142.00")
             return
+        if not ticker_arg.replace(".", "").replace("-", "").isalnum() or len(ticker_arg) > 10:
+            send("❌ ticker 格式无效")
+            return
         if cmd == "/logexec":
             if len(parts) < 4:
                 send("用法：/logexec NVDA <信号价> <实际成交价>\n例：/logexec NVDA 142.00 143.50")
