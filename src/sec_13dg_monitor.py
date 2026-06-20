@@ -55,7 +55,7 @@ def _load_seen() -> set:
     if not os.path.exists(_SEEN_FILE):
         return set()
     try:
-        with open(_SEEN_FILE) as f:
+        with open(_SEEN_FILE, encoding="utf-8") as f:
             data = json.load(f)
         return set(data.get("seen", []))
     except Exception:

@@ -61,7 +61,7 @@ MAX_STOP_PCT                = 12.0     # 最大ATR止损%
 MIN_STOP_PCT                = 0.3      # 最小ATR止损%
 
 # ── 仓位管理 ─────────────────────────────────────────────────
-DEFAULT_MAX_POSITIONS       = 3        # 最多同时持N个仓位
+DEFAULT_MAX_POSITIONS       = 2        # 最多同时持N个仓位（与paper_trading.MAX_CONCURRENT_POSITIONS=2对齐）
 DEFAULT_ACCOUNT             = 2_000.0  # 默认回测资金
 DEFAULT_RISK_PCT            = 3.0      # 每笔风险% (3% of account)
 DEFAULT_MAX_HOLD_DAYS       = 15       # 最长持仓天数

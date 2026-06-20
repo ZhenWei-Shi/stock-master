@@ -336,6 +336,7 @@ def _append_feedback(entry: dict):
     with _FB_LOCK:
         data = _load_feedback()
         data.append(entry)
+        data = data[-1000:]  # 防止无限增长
         _save_feedback(data)
 
 

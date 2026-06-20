@@ -473,15 +473,17 @@ def mark_to_market(mode: str = "paper") -> dict:
     cash = acct.get("cash", 0)
     total_val = round(cash + total_pos_val, 2)
 
-    # 更新历史峰值并持久化（加锁做二次读-改-写，防止覆盖并发开/平仓写入）
-    if total_val > acct.get("peak_value", 0):
-        with _PT_LOCK:
-            data2 = _load(path)
-            if total_val > data2.get("account", {}).get("peak_value", 0):
-                data2["account"]["peak_value"] = total_val
-                _save(data2, path)
+    # 持久化：加锁二次读-改-写，同步更新 current_value 与 peak_value
+    with _PT_LOCK:
+        data2 = _load(path)
+        acct2 = data2.get("account", {})
+        acct2["current_value"] = total_val
+        if total_val > acct2.get("peak_value", 0):
+            acct2["peak_value"] = total_val
+        data2["account"] = acct2
+        _save(data2, path)
+        peak = acct2.get("peak_value", total_val)
 
-    peak  = acct.get("peak_value", total_val)
     dd_pct = (total_val - peak) / peak * 100 if peak > 0 else 0.0
 
     return {
@@ -736,6 +738,7 @@ def log_execution(ticker: str, signal_price: float, actual_price: float,
             "signal_time":   signal_time,
             "note":          note,
         })
+        data["logs"] = data["logs"][-500:]  # 防止无限增长
         _tmp = _EXEC_LOG + ".tmp"
         with open(_tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
@@ -747,8 +750,9 @@ def execution_deviation_report() -> dict:
     """汇总执行偏差统计：量化信号→实际下单的系统性摩擦。"""
     if not os.path.exists(_EXEC_LOG):
         return {"ok": True, "note": "暂无执行记录。请在每次下单后调用 log_execution()。"}
-    with open(_EXEC_LOG, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    with _PT_LOCK:
+        with open(_EXEC_LOG, "r", encoding="utf-8") as f:
+            data = json.load(f)
     logs = data.get("logs", [])
     if not logs:
         return {"ok": True, "note": "执行日志为空"}

@@ -556,7 +556,7 @@ def api_top_oi():
     参数：ticker, top=25, expiry=all|具体日期
     """
     ticker = request.args.get("ticker", "").upper().strip()
-    top_n  = int(request.args.get("top", 25))
+    top_n  = min(int(request.args.get("top", 25)), 100)
     expiry_filter = request.args.get("expiry", "all")
 
     if not ticker:
@@ -1302,7 +1302,7 @@ def api_agent_scan():
     raw       = request.args.get("watchlist", "NVDA,AAPL,TSLA,AMD,META")
     tickers   = [t.strip().upper() for t in raw.split(",") if t.strip()]
     account   = float(request.args.get("account", 2000))
-    auto_p    = request.args.get("auto_paper", "true").lower() != "false"
+    auto_p    = request.args.get("auto_paper", "false").lower() != "false"
     mode      = request.args.get("mode", "paper")
     direction = request.args.get("direction", "LONG").upper()
     try:

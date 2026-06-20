@@ -220,9 +220,9 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # ── Gate B：VIX 恐慌指数 ─────────────────────────────
     try:
         vix_val = float(yf.Ticker("^VIX").history(period="1d")["Close"].iloc[-1])
-        if vix_val > 40:
+        if vix_val > VIX_PANIC_HARD:
             gates["vix"] = {"pass": False, "note": f"VIX={vix_val:.1f}，市场极度恐慌，禁止所有交易"}
-        elif vix_val > 28:
+        elif vix_val > VIX_ELEVATED:
             gates["vix"] = {"pass": "warn", "note": f"VIX={vix_val:.1f}，波动偏高，仓位减半"}
         else:
             gates["vix"] = {"pass": True, "note": f"VIX={vix_val:.1f}，波动正常"}
@@ -632,8 +632,8 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # insider 信号已移除：Form 4 是1-3年长周期视角，与1-5天摆动模型时间框架不对齐
     # 会把技术面死叉的股票(55→67)推成GO，产生系统性假信号。insider仍在long_hold中使用。
 
-    go_threshold   = 65 if aggressive_mode else 75
-    wait_threshold = 45 if aggressive_mode else 55
+    go_threshold   = GO_THRESHOLD_AGG  if aggressive_mode else GO_THRESHOLD_STD
+    wait_threshold = WAIT_THRESHOLD_AGG if aggressive_mode else WAIT_THRESHOLD_STD
 
     adjusted_score = min(100, score + bonus)
 
@@ -663,16 +663,16 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         # 激进模式：3%风险，单仓上限50%
         # 标准模式：1%风险，单仓上限25%
         if aggressive_mode:
-            risk_pct    = 0.03
-            max_pos_pct = 0.50
+            risk_pct    = RISK_PCT_AGG
+            max_pos_pct = MAX_POS_PCT_AGG
             rule_note   = "激进3%风险规则：$2k-$5k账户，单笔最大亏损不超过账户3%"
         elif portfolio < 10_000:
-            risk_pct    = 0.015
-            max_pos_pct = 0.25
+            risk_pct    = RISK_PCT_SMALL
+            max_pos_pct = MAX_POS_PCT_STD
             rule_note   = "小账户1.5%风险规则：单笔最大亏损不超过账户1.5%"
         else:
-            risk_pct    = 0.01
-            max_pos_pct = 0.25
+            risk_pct    = RISK_PCT_STD
+            max_pos_pct = MAX_POS_PCT_STD
             rule_note   = "1%风险规则：任何情况下单笔最大亏损不超过总资金1%"
 
         max_risk       = portfolio * risk_pct
@@ -705,8 +705,8 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         ev_pct = ev / portfolio * 100
 
         stop_price   = round(price - stop_d if direction == "LONG" else price + stop_d, 2)
-        target1      = round(price + atr_val * 2   if direction == "LONG" else price - atr_val * 2,   2)
-        target2      = round(price + atr_val * 3.5 if direction == "LONG" else price - atr_val * 3.5, 2)
+        target1      = round(price + atr_val * TARGET_1_ATR_MULT if direction == "LONG" else price - atr_val * TARGET_1_ATR_MULT, 2)
+        target2      = round(price + atr_val * TARGET_2_ATR_MULT if direction == "LONG" else price - atr_val * TARGET_2_ATR_MULT, 2)
 
         entry_plan = {
             "direction":          direction,
@@ -890,9 +890,9 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
         # "skip" 不扣分
 
     # VIX 扣分（激进模式稍宽）
-    if vix > 40:
+    if vix > VIX_PANIC_HARD:
         base -= 15
-    elif vix > 28:
+    elif vix > VIX_ELEVATED:
         base -= (5 if aggressive_mode else 10)
 
     # 板块逆风扣分（warn = 逆风板块，非阻断）

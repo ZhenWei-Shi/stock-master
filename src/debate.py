@@ -314,7 +314,7 @@ def _bear_analyst(info, hist, close, volume, price, direction, cold_result) -> d
 
     # ── 4. 财报二元事件风险 ───────────────────────────────
     try:
-        cal = yf.Ticker(info.get("symbol", "")).calendar if hasattr(info, "symbol") else None
+        cal = yf.Ticker(info.get("symbol", "")).calendar if info.get("symbol") else None
     except Exception:
         cal = None
     # 简化：从cold_result获取财报门限
