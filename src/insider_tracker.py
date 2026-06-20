@@ -386,8 +386,10 @@ def insider_summary(ticker: str, days: int = INSIDER_LOOKBACK_DAYS,
 
 def _cache_write(path: str, data: dict):
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, path)
     except Exception:
         pass
 

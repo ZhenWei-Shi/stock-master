@@ -32,6 +32,7 @@ ET = pytz.timezone("America/New_York")
 
 # SPY 周线模块级缓存（1小时有效），避免批量评估时重复下载
 _SPY_CACHE: dict = {"ts": 0, "data": None}
+_SPY_CACHE_LOCK = __import__("threading").Lock()
 
 # ══════════════════════════════════════════════════════════════
 # 评分权重常量
@@ -202,11 +203,12 @@ def _score_trend(ticker: str, info: dict) -> tuple[int, list, list]:
         tk   = yf.Ticker(ticker)
         hist = tk.history(period="2y", interval="1wk")  # 周线，2年
 
-        # SPY 缓存：批量评估多只股票时只下载一次
-        if time.time() - _SPY_CACHE["ts"] > 3600 or _SPY_CACHE["data"] is None:
-            _SPY_CACHE["data"] = yf.Ticker("SPY").history(period="2y", interval="1wk")
-            _SPY_CACHE["ts"]   = time.time()
-        spy = _SPY_CACHE["data"]
+        # SPY 缓存：批量评估多只股票时只下载一次，加锁防止并发重复下载
+        with _SPY_CACHE_LOCK:
+            if time.time() - _SPY_CACHE["ts"] > 3600 or _SPY_CACHE["data"] is None:
+                _SPY_CACHE["data"] = yf.Ticker("SPY").history(period="2y", interval="1wk")
+                _SPY_CACHE["ts"]   = time.time()
+            spy = _SPY_CACHE["data"]
 
         if hist.empty or spy.empty:
             neg.append("无足够历史数据评估长期趋势")

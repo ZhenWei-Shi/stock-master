@@ -88,8 +88,10 @@ def _ticker_name_map() -> dict:
         mapping = {v["ticker"].upper(): v.get("title", "").upper()
                    for v in r.json().values()}
         os.makedirs(_DATA, exist_ok=True)
-        with open(_NAMES_FILE, "w") as f:
+        tmp = _NAMES_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(mapping, f)
+        os.replace(tmp, _NAMES_FILE)
         return mapping
     except Exception:
         return {}

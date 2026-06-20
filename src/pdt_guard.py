@@ -21,11 +21,13 @@ PDT（Pattern Day Trader）规则保护模块
 
 import json
 import os
+import threading
 from datetime import datetime, date, timedelta
 import pytz
 
 ET   = pytz.timezone("America/New_York")
 _DB  = os.path.join(os.path.dirname(__file__), "..", "data", "pdt_log.json")
+_PDT_LOCK = threading.Lock()
 
 PDT_THRESHOLD   = 25_000   # 账户净值门槛（美元）
 PDT_WEEK_LIMIT  = 3        # 5个交易日内最多日内交易次数
@@ -48,21 +50,24 @@ def _load_pdt_log() -> dict:
 def _save_pdt_log(data: dict):
     os.makedirs(os.path.dirname(_DB), exist_ok=True)
     try:
-        with open(_DB, "w", encoding="utf-8") as f:
+        tmp = _DB + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, _DB)
     except OSError:
         pass
 
 
 def record_day_trade(ticker: str):
     """平仓时如果当日开平（日内交易），调用此函数持久化记录"""
-    data = _load_pdt_log()
-    today = str(date.today())
-    data.setdefault(today, []).append({
-        "ticker": ticker.upper(),
-        "at": datetime.now(ET).isoformat(),
-    })
-    _save_pdt_log(data)
+    with _PDT_LOCK:
+        data = _load_pdt_log()
+        today = str(date.today())
+        data.setdefault(today, []).append({
+            "ticker": ticker.upper(),
+            "at": datetime.now(ET).isoformat(),
+        })
+        _save_pdt_log(data)
 
 
 def get_rolling_day_trades() -> int:

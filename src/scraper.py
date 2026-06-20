@@ -296,21 +296,27 @@ def get_earnings_analysis(ticker: str) -> dict:
             }
 
         quarters = []
-        for _, row in hist.head(8).iterrows():
+        for idx, row in hist.head(8).iterrows():
             eps_est = row.get("epsEstimate")
             eps_act = row.get("epsActual")
-            surprise_pct = row.get("epsDifference")
-            date = str(row.get("quarter", ""))[:10]
+            date = str(idx)[:10]  # date是index，不是名为"quarter"的列
 
             if eps_est is None or eps_act is None:
                 continue
 
-            beat = bool(eps_act > eps_est) if (eps_est is not None and eps_act is not None) else None
+            eps_est_f = float(eps_est)
+            eps_act_f = float(eps_act)
+            beat = eps_act_f > eps_est_f
+            # surprise_pct：百分比超预期 = (实际-预期)/|预期|×100，epsDifference是美元绝对差值
+            if eps_est_f != 0:
+                surprise_pct_val = round((eps_act_f - eps_est_f) / abs(eps_est_f) * 100, 1)
+            else:
+                surprise_pct_val = None
             quarters.append({
                 "date": date,
-                "eps_est": round(float(eps_est), 3) if eps_est is not None else None,
-                "eps_act": round(float(eps_act), 3) if eps_act is not None else None,
-                "surprise_pct": round(float(surprise_pct) * 100, 1) if surprise_pct is not None else None,
+                "eps_est": round(eps_est_f, 3),
+                "eps_act": round(eps_act_f, 3),
+                "surprise_pct": surprise_pct_val,
                 "beat": beat,
             })
 

@@ -106,16 +106,16 @@ def _check_fomc_calendar_expiry():
     with _FOMC_EXPIRY_WARNED_LOCK:
         if _FOMC_EXPIRY_WARNED:
             return
-    current_year = date.today().year
-    if current_year > _FOMC_MAX_YEAR:
-        import warnings
-        warnings.warn(
-            f"[macro_filter] FOMC 日历仅覆盖至 {_FOMC_MAX_YEAR} 年，"
-            f"当前 {current_year} 年 FOMC 日期未配置，宏观门关将无法拦截 FOMC 窗口！"
-            f"请在 macro_filter.py 中添加 _FOMC_DATES_{current_year}。",
-            RuntimeWarning, stacklevel=3,
-        )
-        _FOMC_EXPIRY_WARNED = True
+        current_year = date.today().year
+        if current_year > _FOMC_MAX_YEAR:
+            import warnings
+            warnings.warn(
+                f"[macro_filter] FOMC 日历仅覆盖至 {_FOMC_MAX_YEAR} 年，"
+                f"当前 {current_year} 年 FOMC 日期未配置，宏观门关将无法拦截 FOMC 窗口！"
+                f"请在 macro_filter.py 中添加 _FOMC_DATES_{current_year}。",
+                RuntimeWarning, stacklevel=3,
+            )
+        _FOMC_EXPIRY_WARNED = True  # 无论是否告警，都标记已检查（锁内）
 
 # BLS 官方 CPI 发布日（提前锁定，避免"第2个周三"算法误差）
 _CPI_DATES_2025 = [

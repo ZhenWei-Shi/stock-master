@@ -913,6 +913,7 @@ function renderResult(d) {
 
 function renderPriceChart(data) {
   if (priceChart) { priceChart.destroy(); priceChart = null; }
+  if (!data || data.length === 0) return;
   const ctx = document.getElementById('price-chart').getContext('2d');
   const prices = data.map(d => d.c);
   const color = prices[prices.length-1] >= prices[0] ? '#3fb950' : '#f85149';
@@ -1063,7 +1064,7 @@ function renderGatesFull(d) {
           <span class="ind-lbl">Reddit (7天提及)</span>
           <span style="font-weight:600;color:${rd.heat==='high'?'var(--red)':rd.heat==='medium'?'var(--yellow)':'var(--green)'}">${rd.mentions_7d !== undefined ? rd.mentions_7d + '次' : rd.error || '—'}</span>
         </div>
-        ${(rd.top_posts||[]).slice(0,2).map(p=>`<div style="font-size:11px;color:var(--muted);margin-top:3px">r/${p.sub}: ${p.title.slice(0,50)}…</div>`).join('')}
+        ${(rd.top_posts||[]).slice(0,2).map(p=>`<div style="font-size:11px;color:var(--muted);margin-top:3px">r/${p.sub}: ${(p.title||'').slice(0,50)}…</div>`).join('')}
       </div>
       <div class="ind-card" style="padding:10px">
         <div style="display:flex;justify-content:space-between">
@@ -1546,8 +1547,8 @@ function renderShortTerm(d) {
       <div class="ind-val" style="color:${rsiColor}">${rsi ? rsi.toFixed(1) : '—'}</div>
       <div class="ind-sub">${rsi<35?'超卖':rsi>65?'超买':'中性'}</div></div>
     <div class="ind-card"><div class="ind-lbl">MACD柱</div>
-      <div class="ind-val" style="color:${macdColor}">${macd_h ? macd_h.toFixed(3) : '—'}</div>
-      <div class="ind-sub">${macd_h>0&&curr.macd_hist_prev<=0?'刚金叉':macd_h<0&&curr.macd_hist_prev>=0?'刚死叉':macd_h>0?'多头':'空头'}</div></div>
+      <div class="ind-val" style="color:${macdColor}">${macd_h !== null && macd_h !== undefined ? macd_h.toFixed(3) : '—'}</div>
+      <div class="ind-sub">${macd_h!=null&&curr.macd_hist_prev!=null?(macd_h>0&&curr.macd_hist_prev<=0?'刚金叉':macd_h<0&&curr.macd_hist_prev>=0?'刚死叉':macd_h>0?'多头':'空头'):'—'}</div></div>
     <div class="ind-card"><div class="ind-lbl">布林%B</div>
       <div class="ind-val" style="color:${bbColor}">${pct_b !== null ? pct_b.toFixed(2) : '—'}</div>
       <div class="ind-sub">${pct_b<0.1?'触下轨':pct_b>0.9?'触上轨':pct_b>0.5?'上半区':'下半区'}</div></div>
@@ -1633,6 +1634,7 @@ function switchStChart(type, btn) {
 
 function renderStPriceChart(data) {
   if (stPriceChart) { stPriceChart.destroy(); stPriceChart = null; }
+  if (!data || data.length === 0) return;
   const ctx = document.getElementById('st-price-chart').getContext('2d');
   const prices = data.map(d=>d.c);
   const color = prices[prices.length-1]>=prices[0]?'#3fb950':'#f85149';
@@ -1744,21 +1746,22 @@ function renderChain(d) {
   const badges = document.getElementById('chain-badges');
   badges.innerHTML = '';
   if (d.hot_layer) {
-    const hot = d.layers.find(l => l.layer === d.hot_layer);
+    const hot = (d.layers||[]).find(l => l.layer === d.hot_layer);
     badges.innerHTML += `<span class="hot-badge">🔥 资金热层 Layer${d.hot_layer}：${hot?hot.name:''}</span>`;
   }
   if (d.next_layer) {
-    const next = d.layers.find(l => l.layer === d.next_layer);
+    const next = (d.layers||[]).find(l => l.layer === d.next_layer);
     badges.innerHTML += `<span class="next-badge">🎯 下一个卡脖子 Layer${d.next_layer}：${next?next.name:''}</span>`;
   }
 
-  document.getElementById('chain-layers').innerHTML = d.layers.slice().reverse().map(layer => {
+  document.getElementById('chain-layers').innerHTML = (d.layers||[]).slice().reverse().map(layer => {
     const isHot = layer.layer === d.hot_layer;
     const isNext = layer.layer === d.next_layer;
-    const _outSum = layer.tickers_data.length
-      ? layer.tickers_data.reduce((s,t) => s+(typeof t.outperform==='number'&&!isNaN(t.outperform)?t.outperform:0), 0)
+    const _td = layer.tickers_data || [];
+    const _outSum = _td.length
+      ? _td.reduce((s,t) => s+(typeof t.outperform==='number'&&!isNaN(t.outperform)?t.outperform:0), 0)
       : null;
-    const avgOut = _outSum !== null ? (_outSum / layer.tickers_data.length) : null;
+    const avgOut = _outSum !== null && _td.length ? (_outSum / _td.length) : null;
     const outColor = avgOut!==null&&avgOut>0 ? 'var(--green)' : avgOut!==null&&avgOut<0 ? 'var(--red)' : 'var(--muted)';
     const extraClass = isHot ? 'layer-hot' : isNext ? 'layer-next' : '';
     const tagHtml = isHot ? '<span class="layer-tag tag-hot">🔥 机构热层</span>'
@@ -2039,8 +2042,8 @@ function renderSectors(data) {
     const c = s.vs_spy > 5 ? 'var(--green)' : s.vs_spy > 0 ? '#56d364' : s.vs_spy > -5 ? 'var(--muted)' : 'var(--red)';
     return `<div class="sector-card">
       <div class="sector-name">${s.sym} · ${s.name}</div>
-      <div class="sector-ret" style="color:${c}">${s.ret_3m > 0 ? '+' : ''}${s.ret_3m}%</div>
-      <div class="sector-vs" style="color:${c}">vs SPY ${s.vs_spy > 0 ? '+' : ''}${s.vs_spy}%</div>
+      <div class="sector-ret" style="color:${c}">${s.ret_3m != null ? (s.ret_3m > 0 ? '+' : '') + s.ret_3m + '%' : '—'}</div>
+      <div class="sector-vs" style="color:${c}">vs SPY ${s.vs_spy != null ? (s.vs_spy > 0 ? '+' : '') + s.vs_spy + '%' : '—'}</div>
     </div>`;
   }).join('');
 

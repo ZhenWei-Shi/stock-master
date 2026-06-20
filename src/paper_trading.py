@@ -718,29 +718,28 @@ def log_execution(ticker: str, signal_price: float, actual_price: float,
 
     action: "entered"（已执行）| "skipped"（信号超出限价，跳过）| "manual_override"（手动改单）
     """
-    try:
-        with open(_EXEC_LOG, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {"logs": []}
-
     deviation_pct = ((actual_price - signal_price) / signal_price * 100
                      if signal_price > 0 else 0)
-    data["logs"].append({
-        "at":            str(datetime.now(ET)),
-        "ticker":        ticker.upper(),
-        "signal_price":  round(signal_price, 4),
-        "actual_price":  round(actual_price, 4),
-        "deviation_pct": round(deviation_pct, 3),
-        "action":        action,
-        "signal_time":   signal_time,
-        "note":          note,
-    })
-    # 原子写入：防止进程崩溃时 execution_log 截断
-    _tmp = _EXEC_LOG + ".tmp"
-    with open(_tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-    os.replace(_tmp, _EXEC_LOG)
+    with _PT_LOCK:  # 防止 scheduler 自动止损 与 Telegram /logexec 并发写同一文件
+        try:
+            with open(_EXEC_LOG, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {"logs": []}
+        data["logs"].append({
+            "at":            str(datetime.now(ET)),
+            "ticker":        ticker.upper(),
+            "signal_price":  round(signal_price, 4),
+            "actual_price":  round(actual_price, 4),
+            "deviation_pct": round(deviation_pct, 3),
+            "action":        action,
+            "signal_time":   signal_time,
+            "note":          note,
+        })
+        _tmp = _EXEC_LOG + ".tmp"
+        with open(_tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(_tmp, _EXEC_LOG)
     return {"ok": True, "deviation_pct": round(deviation_pct, 3)}
 
 

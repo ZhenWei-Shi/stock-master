@@ -310,9 +310,9 @@ def get_earnings_reaction(ticker: str) -> dict:
 
         prices.index = prices.index.tz_localize(None)
         reactions = []
-        for _, row in eh.head(8).iterrows():
+        for idx, row in eh.head(8).iterrows():
             try:
-                q_date = str(row.get("quarter", ""))[:10]
+                q_date = str(idx)[:10]  # date是index，不是名为"quarter"的列
                 q_dt   = datetime.strptime(q_date, "%Y-%m-%d")
                 window = prices.loc[q_dt - timedelta(days=4): q_dt + timedelta(days=4)]
                 if len(window) < 2:

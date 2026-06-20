@@ -43,6 +43,8 @@ def _timed_thread(fn, timeout: int, send_fn, label: str):
 WATCHLIST_FILE = os.path.join(os.path.dirname(__file__), "..", "watchlist.txt")
 _last_update_id = 0
 _wl_lock = threading.Lock()  # 防止读写竞态清空watchlist
+_bot_started = False
+_bot_start_lock = threading.Lock()
 
 
 def _token():
@@ -546,7 +548,12 @@ def poll_loop():
 
 
 def start_bot_thread():
-    """在后台线程启动 Bot 指令监听。"""
+    """在后台线程启动 Bot 指令监听。重入保护：Flask reloader 等场景下只启动一次。"""
+    global _bot_started
+    with _bot_start_lock:
+        if _bot_started:
+            return None
+        _bot_started = True
     t = threading.Thread(target=poll_loop, daemon=True)
     t.start()
     return t

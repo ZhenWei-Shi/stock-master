@@ -604,7 +604,7 @@ def institutional_momentum(ticker: str) -> dict:
             return {"ok": False, "reason": "无机构持仓数据"}
 
         # 机构持仓比例
-        inst_pct  = float(info.get("heldPercentInstitutions", 0)) * 100
+        inst_pct  = float(info.get("institutionPercentHeld", 0)) * 100  # yfinance正确字段名
         insider_pct = float(info.get("heldPercentInsiders", 0)) * 100
 
         # 分析最大机构持仓变化

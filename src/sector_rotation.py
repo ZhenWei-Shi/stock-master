@@ -253,7 +253,9 @@ def fetch_sector_rankings(force: bool = False) -> dict:
             heat = 0.0     # 完全无数据，排末尾
         rs_1m = rs_1m or 0.0
         rs_3m = rs_3m or 0.0
-        accel = rs_1m > (rs_3m / 3) and rs_1m > 0  # 近1月RS优于3月月均，且本身为正（防熊市误判）
+        # 加速：近1月 > 前2月均值，且近1月本身为正（排除熊市轻微反弹误触发）
+        prior_2m_avg = (rs_3m - rs_1m) / 2  # 前2个月的月均超额
+        accel = rs_1m > prior_2m_avg and rs_1m > 0
         scores.append({
             "etf":   etf,
             "name":  meta["name"],
