@@ -5,35 +5,37 @@
   P0: earnings_history 日期是 DataFrame.index，不是列名 "quarter"
   P1: yfinance info 字段 institutionPercentHeld（非 heldPercentInstitutions）
   P0: 空 DataFrame 访问 iloc[-1] 崩溃
+  P2: pandas None→NaN，is None 检查失效（应用 pd.isna）
+
+surprise_pct 公式测试使用真实 src.scraper.calc_surprise_pct 导入。
 """
 import pytest
 import pandas as pd
+from src.scraper import calc_surprise_pct
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # earnings_history 解析逻辑
+# 注意：pd.isna() 同时捕获 None 和 NaN，而 is None 只捕获 None。
+# pandas 在混合数值列中将 None 升级为 float64 NaN，需用 isna。
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_earnings(df: pd.DataFrame) -> list:
     """
-    与 scraper.py:299-321 / fundamentals.py 相同的解析逻辑。
-    用于独立验证字段访问方式正确。
-    注意：pandas 将 None 存为 NaN（float），必须用 pd.isna() 而非 is None。
+    模拟 scraper.py:299-321 的解析逻辑，用于验证字段访问方式。
+    surprise_pct 调用真实 calc_surprise_pct，不内联公式。
     """
     quarters = []
     for idx, row in df.head(8).iterrows():
         eps_est = row.get("epsEstimate")
         eps_act = row.get("epsActual")
-        date = str(idx)[:10]          # 正确：date 是 index
-        if pd.isna(eps_est) or pd.isna(eps_act):  # 正确：isna 捕获 NaN 和 None
+        date = str(idx)[:10]
+        if pd.isna(eps_est) or pd.isna(eps_act):
             continue
         eps_est_f = float(eps_est)
         eps_act_f = float(eps_act)
         beat = eps_act_f > eps_est_f
-        surprise = (
-            round((eps_act_f - eps_est_f) / abs(eps_est_f) * 100, 1)
-            if eps_est_f != 0 else None
-        )
+        surprise = calc_surprise_pct(eps_act_f, eps_est_f)  # 调用真实函数
         quarters.append({"date": date, "eps_est": eps_est_f,
                           "eps_act": eps_act_f, "beat": beat, "surprise_pct": surprise})
     return quarters

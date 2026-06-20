@@ -14,6 +14,14 @@ _HEADERS = {
     "Accept": "application/json",
 }
 
+
+def calc_surprise_pct(eps_act: float, eps_est: float):
+    """百分比超预期 = (实际-预期)/|预期|×100；eps_est=0 时返回 None。"""
+    if eps_est == 0:
+        return None
+    return round((eps_act - eps_est) / abs(eps_est) * 100, 1)
+
+
 # ─────────────────────────────────────────────────────────
 # 关卡4：散户密度
 # ─────────────────────────────────────────────────────────
@@ -307,11 +315,7 @@ def get_earnings_analysis(ticker: str) -> dict:
             eps_est_f = float(eps_est)
             eps_act_f = float(eps_act)
             beat = eps_act_f > eps_est_f
-            # surprise_pct：百分比超预期 = (实际-预期)/|预期|×100，epsDifference是美元绝对差值
-            if eps_est_f != 0:
-                surprise_pct_val = round((eps_act_f - eps_est_f) / abs(eps_est_f) * 100, 1)
-            else:
-                surprise_pct_val = None
+            surprise_pct_val = calc_surprise_pct(eps_act_f, eps_est_f)
             quarters.append({
                 "date": date,
                 "eps_est": round(eps_est_f, 3),

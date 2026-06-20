@@ -43,7 +43,8 @@ class TestLogExecutionConcurrency:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=10)  # 防止死锁时测试永远挂起
+        assert not any(t.is_alive() for t in threads), "线程超时（可能死锁）"
 
         assert not errors, f"线程中发生异常：{errors}"
 
@@ -92,7 +93,8 @@ class TestRecordDayTradeConcurrency:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=10)
+        assert not any(t.is_alive() for t in threads), "线程超时（可能死锁）"
 
         assert not errors, f"线程中发生异常：{errors}"
 
@@ -144,7 +146,8 @@ class TestStartBotThreadReentrance:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=5)
+        assert not any(t.is_alive() for t in threads), "线程超时"
 
         non_none = [t for t in threads_returned if t is not None]
         assert len(non_none) == 1, (

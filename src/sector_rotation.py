@@ -31,6 +31,16 @@ _CACHE = os.path.join(_DATA, "sector_cache.json")
 
 os.makedirs(_DATA, exist_ok=True)
 
+
+def is_accelerating(rs_1m: float, rs_3m: float) -> bool:
+    """
+    板块加速信号：近1月超额收益 > 前2月月均值，且近1月为正。
+    等价于 rs_1m > rs_3m/3（两式代数相同，此写法更能表达"前2月均值"语义）。
+    """
+    prior_2m_avg = (rs_3m - rs_1m) / 2
+    return rs_1m > prior_2m_avg and rs_1m > 0
+
+
 # ══════════════════════════════════════════════════════════════
 # 配置常量
 # ══════════════════════════════════════════════════════════════
@@ -253,9 +263,7 @@ def fetch_sector_rankings(force: bool = False) -> dict:
             heat = 0.0     # 完全无数据，排末尾
         rs_1m = rs_1m or 0.0
         rs_3m = rs_3m or 0.0
-        # 加速：近1月 > 前2月均值，且近1月本身为正（排除熊市轻微反弹误触发）
-        prior_2m_avg = (rs_3m - rs_1m) / 2  # 前2个月的月均超额
-        accel = rs_1m > prior_2m_avg and rs_1m > 0
+        accel = is_accelerating(rs_1m, rs_3m)
         scores.append({
             "etf":   etf,
             "name":  meta["name"],
