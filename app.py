@@ -1375,7 +1375,7 @@ def api_pead(ticker):
 
 
 @app.route("/api/earnings/<ticker>/quality")
-def api_earnings_quality(ticker):
+def api_earnings_ticker_quality(ticker):
     """质量因子分析（ROE / 毛利率 / FCF质量 / 债务）"""
     try:
         return app.response_class(
