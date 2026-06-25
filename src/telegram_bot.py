@@ -343,7 +343,7 @@ def handle_command(text: str):
             if not wl:
                 send("⚠️ 自选股为空，将使用板块轮动热股扫描（约2-3分钟）...")
             else:
-                send(f"⏳ 开始扫描 {len(wl)} 只自选股 + 板块热股，请稍候（约1-3分钟）...")
+                send(f"⏳ 开始扫描（自选 {len(wl)} 只 + 板块热股，合并后最多20只），请稍候（约1-3分钟）...")
             _timed_thread(
                 lambda: full_scan_cycle(wl, account, "paper", True),
                 timeout=480, send_fn=send, label="/scan"
