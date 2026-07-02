@@ -231,6 +231,80 @@ def format_classification(r: dict) -> str:
     return "\n".join(lines)
 
 
+def format_check_telegram(ticker: str) -> str:
+    """单只股票综合诊断：短线九关 + GEX期权结构 + 长期持仓质量，大白话解读。"""
+    from src.cold_model import cold_decision
+    from src.gex_scanner import calc_gex
+    from src.long_hold import long_hold_eval
+
+    account = float(os.getenv("AGENT_ACCOUNT", "2000"))
+    cd  = cold_decision(ticker, portfolio=account, aggressive_mode=True)
+    gex = calc_gex(ticker)
+    lh  = long_hold_eval(ticker)
+
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    lines = [f"🔍 <b>{ticker} 个股诊断</b>  {today}", ""]
+
+    # ── 短线技术面（九关） ──
+    verdict = cd.get("verdict", "ABORT")
+    score   = cd.get("score", 0)
+    v_icon  = {"GO": "🟢", "WAIT": "🟡", "ABORT": "🔴"}.get(verdict, "🔴")
+    lines.append(f"{v_icon} <b>【短线技术面】</b>{verdict}（九关得分 {score}/100）")
+    if cd.get("reason"):
+        lines.append(f"  <i>（大白话：{cd['reason']}）</i>")
+    lines.append("")
+
+    # ── 期权结构（GEX） ──
+    if gex.get("error"):
+        lines.append(f"⚪ <b>【期权结构】</b>{gex['error']}")
+    else:
+        env_icon = "🟢" if gex["gex_env"] == "正伽马" else "🔴"
+        env_hint = (
+            "机构对冲会压制波动，股价短期内不容易大起大落"
+            if gex["gex_env"] == "正伽马"
+            else "机构对冲会放大波动，容易出现大涨大跌"
+        )
+        lines.append(
+            f"{env_icon} <b>【期权结构】</b>{gex['gex_env']}"
+            f"（净{gex['total_gex_m']:+.0f}M），GEX King ${gex['gex_king']}"
+        )
+        lines.append(f"  <i>（大白话：{env_hint}）</i>")
+    lines.append("")
+
+    # ── 长期质量 ──
+    if lh.get("error"):
+        lines.append(f"⚪ <b>【长期质量】</b>{lh['error']}")
+    else:
+        lh_verdict = lh["verdict"]
+        lh_icon = {"HOLD": "🟢", "WATCH": "🟡", "SKIP": "🔴"}.get(lh_verdict, "🔴")
+        lh_hint = {
+            "HOLD":  "基本面适合长期持有",
+            "WATCH": "基本面尚可，但还不够扎实，可再观察",
+            "SKIP":  "基本面存在明显问题，不适合长期持有",
+        }[lh_verdict]
+        lines.append(f"{lh_icon} <b>【长期质量】</b>{lh_verdict}（{lh['score']}/100）")
+        lines.append(f"  <i>（大白话：{lh_hint}）</i>")
+    lines.append("")
+
+    # ── 总结 ──
+    lines.append("─────────────────────────")
+    summary = []
+    summary.append({
+        "GO": "短线可考虑介入",
+        "WAIT": "短线建议再等等",
+        "ABORT": "短线暂不建议",
+    }.get(verdict, "短线数据不足"))
+    if not lh.get("error"):
+        summary.append({
+            "HOLD": "长期也具备持有价值",
+            "WATCH": "长期可继续观察",
+            "SKIP": "长期基本面偏弱",
+        }[lh["verdict"]])
+    lines.append("📝 <b>总结</b>：" + "，".join(summary))
+
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────────────────────
 # 自选股文件读写
 # ─────────────────────────────────────────────────────────────
@@ -278,6 +352,7 @@ def handle_command(text: str):
             "/hotlist          查看当日动态扫描列表\n"
             "/gex [NVDA TSLA]           GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
+            "/check NVDA                个股综合诊断（短线+期权+长期，大白话解读）\n"
             "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
             "/13dg                      SEC 13D/G机构大仓新申报（近3天）\n"
             "/logexec NVDA 142.00 143.50  记录信号价→实际成交价（执行追踪）\n"
@@ -413,6 +488,21 @@ def handle_command(text: str):
             except Exception as e:
                 send(f"长持评估失败：{e}")
         _timed_thread(_do_longhold, timeout=200, send_fn=send, label="/longhold")
+
+    elif cmd == "/check":
+        # /check NVDA — 综合诊断：短线九关 + GEX期权结构 + 长期持仓质量
+        custom = [p.upper() for p in parts[1:] if p.isalpha()]
+        if not custom:
+            send("用法：/check NVDA")
+            return
+        ticker = custom[0]
+        send(f"⏳ 正在生成 {ticker} 综合诊断报告（约30-90秒）...")
+        def _do_check():
+            try:
+                send(format_check_telegram(ticker))
+            except Exception as e:
+                send(f"{ticker} 诊断失败：{e}")
+        _timed_thread(_do_check, timeout=240, send_fn=send, label="/check")
 
     elif cmd == "/status":
         wl = read_watchlist()

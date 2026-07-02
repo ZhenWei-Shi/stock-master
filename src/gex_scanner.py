@@ -218,18 +218,28 @@ def format_gex_telegram(results: list) -> str:
         any_ok = True
 
         env_icon = "🟢" if r["gex_env"] == "正伽马" else "🔴"
+        env_hint = (
+            "机构对冲会压制波动，股价容易横盘震荡"
+            if r["gex_env"] == "正伽马"
+            else "机构对冲会放大波动，容易出现大涨大跌"
+        )
         lines.append(
             f"{env_icon} <b>{r['ticker']}</b>  ${r['spot']}"
             f"  [{r['gex_env']}  净{r['total_gex_m']:+.0f}M]"
         )
+        lines.append(f"  <i>（大白话：{env_hint}）</i>")
         lines.append(f"  GEX King：${r['gex_king']}（{r['gex_king_m']:+.0f}M，价格磁吸/翻转点）")
+        lines.append("  <i>（大白话：这是期权持仓最集中的价位，股价容易被\"吸\"向这里）</i>")
 
         if r.get("resistance") and r["resistance"] != r["gex_king"]:
             lines.append(f"  上方压力：${r['resistance']}（负GEX，做市商卖出对冲）")
+            lines.append("  <i>（大白话：股价涨到这附近可能遇到抛压，不容易再往上）</i>")
         if r.get("support") and r["support"] != r["gex_king"]:
             lines.append(f"  下方支撑：${r['support']}（正GEX，做市商买入托底）")
+            lines.append("  <i>（大白话：股价跌到这附近可能有资金托底，不容易再往下）</i>")
         if r.get("flip_strike"):
             lines.append(f"  正负翻转：${r['flip_strike']}")
+            lines.append("  <i>（大白话：越过这个价位，市场的\"脾气\"可能从稳变躁，或反过来）</i>")
 
         def _oi_str(n: int) -> str:
             return f"{n/1000:.1f}k" if n >= 1000 else str(n)
@@ -237,12 +247,35 @@ def format_gex_telegram(results: list) -> str:
             f"  P/C OI比：{r['pc_ratio']}"
             f"（Call {_oi_str(r['call_oi'])} / Put {_oi_str(r['put_oi'])}）→ {r['pc_bias']}"
         )
+        lines.append("  <i>（大白话：看跌 vs 看涨的持仓比例，比例越高说明情绪越偏空）</i>")
         lines.append("")
 
     if any_ok:
+        valid = [r for r in results if not r.get("error")]
+        pos_n = sum(1 for r in valid if r["gex_env"] == "正伽马")
+        neg_n = len(valid) - pos_n
+        if pos_n >= neg_n:
+            env_summary = "今日多数标的处于正伽马环境，大盘整体偏稳，更适合区间操作，追涨杀跌胜率较低"
+        else:
+            env_summary = "今日多数标的处于负伽马环境，大盘容易出现较大波动，追涨杀跌风险变大，仓位可适当谨慎"
+
+        bull_n = sum(1 for r in valid if r["pc_bias"] == "偏多")
+        bear_n = sum(1 for r in valid if r["pc_bias"] == "偏空")
+        if bull_n > bear_n:
+            sentiment_summary = "期权持仓情绪整体偏多"
+        elif bear_n > bull_n:
+            sentiment_summary = "期权持仓情绪整体偏空"
+        else:
+            sentiment_summary = "期权持仓情绪中性，多空分歧不大"
+
+        lines.append("📝 <b>今日总结（大白话）</b>")
+        lines.append(f"  {env_summary}")
+        lines.append(f"  {sentiment_summary}，具体标的仍需结合各自支撑压力位判断")
+        lines.append("")
+
         lines.append("─────────────────────────")
-        lines.append("💡 <b>正伽马</b>：做市商对冲抑制波动，价格趋向 GEX King 区间震荡")
-        lines.append("   <b>负伽马</b>：做市商对冲放大波动，突破后趋势可延伸")
+        lines.append("💡 <b>正伽马</b>：机构对冲抑制波动，价格趋向 GEX King 区间震荡")
+        lines.append("   <b>负伽马</b>：机构对冲放大波动，突破后趋势可延伸")
         lines.append("   <b>GEX King</b>：最大对冲集中点，磁吸效应最强")
         lines.append("   ⚠️ 数据为 EOD 期权链，非实时逐笔大单")
 
