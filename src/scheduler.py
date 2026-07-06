@@ -259,6 +259,17 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
       4. Telegram 推送信号通知
     """
     now = datetime.now(ET).strftime("%Y-%m-%d %H:%M ET")
+
+    # 用账本里的真实净值覆盖启动参数里的静态数字（原逻辑一直显示--account
+    # 命令行默认值，即便实盘已产生盈亏，日志和推送都还显示开户原始金额）
+    try:
+        from src.paper_trading import list_positions
+        live_value = list_positions(mode).get("account", {}).get("current_value")
+        if live_value:
+            account = live_value
+    except Exception:
+        pass
+
     print(f"\n{'='*50}")
     print(f"[Scheduler] 开始完整扫描周期 @ {now}")
     print(f"[Scheduler] 账户：${account:,.0f} | 模式：{mode}")
@@ -526,6 +537,14 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
     }
 
     executed_today = set()
+
+    try:
+        from src.paper_trading import list_positions
+        live_value = list_positions(mode).get("account", {}).get("current_value")
+        if live_value:
+            account = live_value
+    except Exception:
+        pass
 
     if use_telegram:
         send_telegram(
