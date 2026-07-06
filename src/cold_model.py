@@ -298,6 +298,14 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     vol_m20 = float(vol.rolling(20).mean().iloc[-1])
     vol_today = float(vol.iloc[-1])
 
+    # 盘中扫描时"今日"K线只是累计到当前时刻的成交量，直接除以20日"整日"均量
+    # 会系统性偏低（9:45开盘15分钟时几乎必然<0.8x），按已过盘中时间比例折算
+    # 期望成交量再比较，避免误杀信号；收盘后/盘前运行时按整日比较不变。
+    if MARKET_OPEN_MIN <= total_min < MARKET_CLOSE_MIN and not is_weekend:
+        elapsed_frac = max((total_min - MARKET_OPEN_MIN) / (MARKET_CLOSE_MIN - MARKET_OPEN_MIN), 0.05)
+    else:
+        elapsed_frac = 1.0
+
     # MP2-3：vol_m20=0（停牌/数据缺失）时应拒绝，不能默认量比=1.0 静默通过
     if vol_m20 <= 0:
         gates["volume"] = {
@@ -306,7 +314,7 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         }
         vol_ratio = 0.0
     else:
-        vol_ratio = vol_today / vol_m20
+        vol_ratio = vol_today / (vol_m20 * elapsed_frac)
 
     price_chg = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100) if len(close) >= 2 else 0
 

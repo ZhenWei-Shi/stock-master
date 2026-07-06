@@ -151,7 +151,7 @@ def notify_daily_report(report: dict):
         msg += "\n📂 当前无持仓\n"
 
     if risk.get("circuit_breaker"):
-        msg += "\n🚨 熔断器激活！请复盘后手动解除"
+        msg += "\n⚠️ 熔断警示中（回撤/连续亏损超阈值），不再自动拦截开仓，请自行评估仓位"
 
     kelly = perf.get("kelly", {})
     if kelly.get("half_kelly_usd"):

@@ -211,6 +211,8 @@ def run_scan(watchlist: list, account_value: float = 2000,
                         "cost":      result["total_cost"],
                     })
                     print(f"  ✅ 开仓 {sig['ticker']} × {ep.get('shares')}股 @ ${result['exec_price']:.2f}")
+                    if result.get("circuit_breaker_warning"):
+                        print(f"    {result['circuit_breaker_warning']}")
                 else:
                     print(f"  ❌ 开仓失败 {sig['ticker']}：{result.get('error')}")
             except Exception as oe:
@@ -329,7 +331,7 @@ def _generate_action_items(perf: dict, pos: dict) -> list:
     summ  = perf.get("summary", {})
 
     if risk.get("circuit_breaker"):
-        items.append("🚨 熔断器激活！今日禁止开任何新仓。先复盘最近5笔亏损原因。")
+        items.append("⚠️ 熔断警示中（回撤/连续亏损超阈值），系统不会自动拦截新仓，建议自行复盘后决定是否减仓。")
 
     if risk.get("consecutive_losses", 0) >= 3:
         items.append(f"⚠️ 连续亏损{risk['consecutive_losses']}笔，考虑将仓位缩减50%")

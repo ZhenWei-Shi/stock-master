@@ -150,9 +150,12 @@ def open_position(ticker: str, shares: int, entry_price: float,
         data = _load(path)
         acct = data.get("account", {})
 
+        # 熔断器不再拦截开仓，仅作为风险警示随开仓结果一并返回（用户要求：熔断后不锁定）
+        cb_warning = None
         if acct.get("circuit_breaker", {}).get("active"):
-            return {"ok": False, "error": "熔断器激活！当前禁止开新仓位",
-                    "reason": f"连续{CB_LOSS_TRIGGER}笔亏损或回撤超过{abs(CB_DRAWDOWN_TRIGGER)}%，需冷静期1周"}
+            cb_warning = (f"⚠️ 熔断警示：连续{CB_LOSS_TRIGGER}笔亏损或回撤超过"
+                          f"{abs(CB_DRAWDOWN_TRIGGER)}%（{acct['circuit_breaker'].get('reason', '')}），"
+                          f"本次开仓仍会执行，请自行评估是否减仓")
 
         exec_price   = entry_price * (1 + slippage_pct / 100)
         total_cost   = exec_price * shares
@@ -229,6 +232,7 @@ def open_position(ticker: str, shares: int, entry_price: float,
             "total_cost": round(total_cost, 2),
             "cash_left":  round(acct["cash"], 2),
             "note":       f"{'模拟' if mode=='paper' else '真实'}开仓成功",
+            "circuit_breaker_warning": cb_warning,
         }
 
     # 锁外记录入场信号快照，避免持锁期间做文件IO
