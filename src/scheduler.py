@@ -6,11 +6,14 @@
   python scheduler.py --telegram       # 开启 Telegram 通知
 
 交易日程（美东时间 ET）：
+  09:00  宏观快照    — 生成当日宏观否决快照（供全天读取）
   09:45  开盘扫描    — 等开盘15分钟稳定后扫描，避免开盘噪音
-  12:00  午间监控    — 检查止损/目标是否触发
+  10:00/11:00/12:00/13:00/14:05/15:00
+         盘中加密检查 — 刷新宏观快照 + 检查止损/目标是否触发
+         （2026-07 修复：原来只在12:00查一次，间隔太长导致止损滑点过大）
+  14:00  13D/G 午后监控
   15:30  收盘前扫描  — 下一交易日候选名单
-  16:00  每日报告    — 生成 P&L 报告，更新 Kelly 参数
-  09:00  周日复盘提醒 — 提示回顾本周交易记录
+  16:05  每日报告    — 生成 P&L 报告，更新 Kelly 参数
 
 数据成本：
   yfinance日线数据 — 免费，适合3-10天摆动交易
@@ -527,11 +530,31 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[13D/G] 午后监控失败：{e}")
 
+    def _intraday_check():
+        """
+        盘中加密检查（10:00/11:00/12:00/13:00/14:05/15:00）：
+        1. 刷新宏观快照——避免 macro_gate_check() 因快照超过2小时陈旧而静默跳过宏观否决保护
+        2. 监控持仓止损/目标——原设计一天只在12:00检查一次，
+           若价格在两次检查之间跌破止损位后持续下探，只能按下次检查时的市价平仓，
+           实际亏损可能明显超过设计的止损距离（2026-07 复盘 MRNA/BIIB 均出现此问题）
+        """
+        try:
+            from src.macro_filter import full_macro_report
+            full_macro_report(_latest_watchlist())
+        except Exception as e:
+            print(f"[Macro] 盘中快照刷新失败：{e}")
+        monitor_cycle(mode, use_telegram)
+
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
-        (14,  0): ("afternoon_13dg",  _afternoon_13dg),
         (9,  45): ("morning_scan",    lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
-        (12,  0): ("noon_monitor",   lambda: monitor_cycle(mode, use_telegram)),
+        (10,  0): ("intraday_check_1", _intraday_check),
+        (11,  0): ("intraday_check_2", _intraday_check),
+        (12,  0): ("intraday_check_3", _intraday_check),
+        (13,  0): ("intraday_check_4", _intraday_check),
+        (14,  0): ("afternoon_13dg",  _afternoon_13dg),
+        (14,  5): ("intraday_check_5", _intraday_check),
+        (15,  0): ("intraday_check_6", _intraday_check),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
     }
@@ -551,7 +574,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             f"🤖 <b>TradingAgent 启动</b>\n"
             f"账户：${account:,.0f} | 模式：{mode}\n"
             f"监控股票：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n"
-            f"计划：09:45 / 12:00 / 15:30 / 16:05 ET"
+            f"计划：09:45 / 10:00-15:00每小时监控 / 15:30 / 16:05 ET"
         )
 
     print(f"[Scheduler] Agent 启动，按 Ctrl+C 停止")

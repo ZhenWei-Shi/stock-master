@@ -520,6 +520,7 @@ def get_etf_signals() -> dict:
             "etf_changes_pct": signals,
             "inferred_themes": inferred_themes,
             "vix_level":       vix_level,  # 返回绝对水平，不是涨幅%
+            "vix_change_pct":  vix,        # VIX 真实日涨跌幅%（供宏观否决用，不同于 vix_level）
             "risk_environment": (
                 "🔴 高风险（VIX>25）" if vix_level > 25 else
                 "🟡 中等风险（VIX>18）" if vix_level > 18 else
@@ -648,7 +649,7 @@ def full_macro_report(watchlist: list = None) -> dict:
 
     # 综合操作建议
     high_risk_today = calendar.get("high_risk_today", False)
-    vix_high = etf_sigs.get("vix_level", 0) > 8
+    vix_high = etf_sigs.get("vix_change_pct", 0) > VIX_CAUTION_PCT
 
     if high_risk_today:
         master_action = "🛑 今日重大经济事件发布——暂停所有新开仓，等待数据消化后再操作"
@@ -668,7 +669,7 @@ def full_macro_report(watchlist: list = None) -> dict:
         "tickers_avoid":   tickers_avoid,
         "tickers_favor":   tickers_favor,
         "high_risk_today": high_risk_today,
-        "vix_change_pct":  etf_sigs.get("vix_level", 0),
+        "vix_change_pct":  etf_sigs.get("vix_change_pct", 0),
     }
     snap_path = os.path.join(_DATA, "macro_snapshot.json")
     snap_tmp  = snap_path + ".tmp"
