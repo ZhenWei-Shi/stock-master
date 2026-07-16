@@ -477,13 +477,29 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[13D/G] 监控失败：{e}")
                 return ("13dg", None)
 
-        # ── 任务1 / 2 / 4 并行执行 ─────────────────────────────
+        def _task_debt_event():
+            try:
+                from src.debt_event_monitor import run_debt_event_monitor
+                wl  = _latest_watchlist()
+                rde = run_debt_event_monitor(watchlist=wl,
+                                             send_fn=send_telegram if use_telegram else None)
+                if rde["new_count"]:
+                    print(f"[发债事件] 推送 {rde['new_count']} 条新公告：{rde['pushed']}")
+                else:
+                    print("[发债事件] 无新发债/可转债公告")
+                return ("debt_event", None)   # 内部已自行推送
+            except Exception as e:
+                print(f"[发债事件] 监控失败：{e}")
+                return ("debt_event", None)
+
+        # ── 任务1 / 2 / 4 / 5 并行执行 ─────────────────────────
         results = {}
-        with ThreadPoolExecutor(max_workers=3) as ex:
+        with ThreadPoolExecutor(max_workers=4) as ex:
             futures = {
-                ex.submit(_task_macro):  "macro",
-                ex.submit(_task_sector): "sector",
-                ex.submit(_task_13dg):   "13dg",
+                ex.submit(_task_macro):       "macro",
+                ex.submit(_task_sector):      "sector",
+                ex.submit(_task_13dg):        "13dg",
+                ex.submit(_task_debt_event):  "debt_event",
             }
             for fut in as_completed(futures):
                 kind, msg = fut.result()
@@ -519,7 +535,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             print(f"[Sector] 动态 watchlist 构建失败：{e}")
 
     def _afternoon_13dg():
-        """14:00 午后再查一次13D/G（大陆时间07:00前提交的申报可能当天才出现）。"""
+        """14:00 午后再查一次13D/G + 发债事件（大陆时间07:00前提交的申报可能当天才出现）。"""
         try:
             from src.sec_13dg_monitor import run_13dg_monitor
             wl = _latest_watchlist()
@@ -529,6 +545,16 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[13D/G] 午后推送 {r13['new_count']} 条新申报")
         except Exception as e:
             print(f"[13D/G] 午后监控失败：{e}")
+
+        try:
+            from src.debt_event_monitor import run_debt_event_monitor
+            wl = _latest_watchlist()
+            rde = run_debt_event_monitor(watchlist=wl,
+                                         send_fn=send_telegram if use_telegram else None)
+            if rde["new_count"]:
+                print(f"[发债事件] 午后推送 {rde['new_count']} 条新公告")
+        except Exception as e:
+            print(f"[发债事件] 午后监控失败：{e}")
 
     def _intraday_check():
         """

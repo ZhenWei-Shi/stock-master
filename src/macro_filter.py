@@ -209,20 +209,28 @@ def get_economic_calendar() -> dict:
         d = date.fromisoformat(cpi_day)
         days = (d - today).days
         if -1 <= days <= 14:
+            if days == -1:
+                action = f"昨日（{cpi_day}）CPI已公布，今日市场仍在消化，谨慎开新仓"
+            elif days == 0:
+                action = "今日 CPI 发布！高通胀→科技受压，低通胀→成长股受益"
+            elif days == 1:
+                action = f"明日（{cpi_day}）CPI发布，今日降低新仓比例"
+            else:
+                action = f"CPI 在 {days} 天后，布局前先确认通胀预期"
             events.append({
                 "name":      "CPI 通胀数据",
                 "date":      cpi_day,
                 "days_away": days,
                 "risk_level": "🔴 高" if abs(days) <= 1 else "🟡 中",
-                "action": (
-                    "CPI 发布日！高通胀→科技受压，低通胀→成长股受益"
-                    if abs(days) <= 1 else
-                    f"CPI 在 {days} 天后，布局前先确认通胀预期"
-                ),
+                "action": action,
                 "impact": "通胀数据决定美联储下一步，影响利率预期",
             })
-            if abs(days) <= 1:
-                warnings.append(f"⚠️ CPI 发布日（{cpi_day}），等待数据再行动")
+            if days == -1:
+                warnings.append(f"📌 昨日CPI已公布（{cpi_day}），今日市场消化期，谨慎建仓")
+            elif days == 0:
+                warnings.append(f"🚨 今日CPI发布（{cpi_day}），等待数据再行动")
+            elif days == 1:
+                warnings.append(f"⚠️ 明日CPI发布（{cpi_day}），今日降低新仓")
 
     # 非农
     nfp_day = _this_month_nfp_day()
@@ -230,20 +238,28 @@ def get_economic_calendar() -> dict:
         d = date.fromisoformat(nfp_day)
         days = (d - today).days
         if -1 <= days <= 7:
+            if days == -1:
+                action = f"昨日（{nfp_day}）非农已公布，今日市场仍在消化，谨慎开新仓"
+            elif days == 0:
+                action = "今日 NFP 发布！就业强→美联储鹰派，就业弱→降息预期"
+            elif days == 1:
+                action = f"明日（{nfp_day}）非农发布，今日降低新仓比例"
+            else:
+                action = f"NFP 在 {days} 天后，就业数据影响利率方向"
             events.append({
                 "name":      "非农就业报告（NFP）",
                 "date":      nfp_day,
                 "days_away": days,
                 "risk_level": "🔴 高" if abs(days) <= 1 else "🟡 中",
-                "action": (
-                    "NFP 发布日！就业强→美联储鹰派，就业弱→降息预期"
-                    if abs(days) <= 1 else
-                    f"NFP 在 {days} 天后，就业数据影响利率方向"
-                ),
+                "action": action,
                 "impact": "就业是美联储最重要的参考指标",
             })
-            if abs(days) <= 1:
-                warnings.append(f"⚠️ 非农就业数据发布日（{nfp_day}），等数据再建仓")
+            if days == -1:
+                warnings.append(f"📌 昨日非农已公布（{nfp_day}），今日市场消化期，谨慎建仓")
+            elif days == 0:
+                warnings.append(f"🚨 今日非农就业数据发布（{nfp_day}），等数据再建仓")
+            elif days == 1:
+                warnings.append(f"⚠️ 明日非农就业数据发布（{nfp_day}），今日降低新仓")
 
     # 财报季（美股：1月/4月/7月/10月）
     month = today.month

@@ -18,6 +18,7 @@ from __future__ import annotations   # Python 3.9 兼容 X | Y 类型注解
 
 import os
 import json
+import re
 import time
 import threading
 import requests
@@ -43,7 +44,11 @@ _EDGAR_HEADERS = {
 # ══════════════════════════════════════════════════════════════
 
 LOOKBACK_DAYS       = 3      # 检查最近N天的新申报（防止漏掉周末）
-FORMS_TO_WATCH      = ["SC 13D", "SC 13G", "SC 13D/A", "SC 13G/A"]
+# 2026-07-15实测确认：EDGAR EFTS当前索引里的实际表单标签是"SCHEDULE 13D/G"，
+# 不是文档直觉写的"SC 13D/G"——旧值在2024年数据上偶然能查到（历史索引里残留过
+# 旧标签），但对2025/2026年新申报 forms=SC 13G 恒返回0条，导致监控功能实际
+# 从未在近期数据上生效。
+FORMS_TO_WATCH      = ["SCHEDULE 13D", "SCHEDULE 13G", "SCHEDULE 13D/A", "SCHEDULE 13G/A"]
 MAX_RESULTS_PER_RUN = 20     # 单次最多处理N条结果
 REQUEST_DELAY       = 0.2    # EDGAR 请求间隔
 
@@ -124,19 +129,35 @@ def _matches_watchlist(entity_name: str, watchlist: list[str]) -> bool:
     return False
 
 
+# EDGAR 公司名固定格式 "Company Name  (TICKER)  (CIK 0001234567)"，去掉尾部
+# "(TICKER) (CIK ...)" 部分即为可喂给 _company_key() 模糊匹配的纯公司名
+_DISPLAY_NAME_SUFFIX = re.compile(r"\s*\([A-Z0-9,\-\s]+\)\s*\(CIK\s+\d+\)\s*$")
+
+
 def _search_edgar(form_type: str, days: int = LOOKBACK_DAYS) -> list[dict]:
     """
     用 EDGAR EFTS API 检索最近申报。
 
     返回：[{accession, entity_name, file_date, form_type}]
+
+    ⚠️ 两个实测确认过的EDGAR EFTS坑（2026-07-15排查发债事件gate时发现，
+    用ASTS真实案例验证）：
+      1. 缺少 `enddt` 时 `dateRange=custom&startdt=...` 被完全忽略，
+         返回不受日期限制、按相关度/其他排序的历史结果（实测偏差超1年）。
+      2. `_source=` 字段过滤参数被忽略，公司名字段是 `display_names`（数组），
+         不是 `entity_name`——旧写法 `src.get("entity_name")` 实测恒为空字符串，
+         导致 `_matches_watchlist()` 在传入非空watchlist时恒返回False，
+         即 scheduler.py 里 09:00/14:00 调用的 `check_new_13dg(watchlist=wl)`
+         此前实际上从未真正推送过watchlist范围内的新申报。
     """
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    today  = datetime.now()
+    cutoff = (today - timedelta(days=days)).strftime("%Y-%m-%d")
+    enddt  = today.strftime("%Y-%m-%d")
     # 只用 forms= 过滤表单类型，不用 q= 全文搜索（会匹配到无关文档）
     url = (
         "https://efts.sec.gov/LATEST/search-index"
         f"?forms={quote(form_type, safe='')}"
-        f"&dateRange=custom&startdt={cutoff}"
-        "&_source=entity_name,file_date,accession_no"
+        f"&dateRange=custom&startdt={cutoff}&enddt={enddt}"
     )
     try:
         r = requests.get(url, headers=_EDGAR_HEADERS, timeout=20)
@@ -148,9 +169,11 @@ def _search_edgar(form_type: str, days: int = LOOKBACK_DAYS) -> list[dict]:
     results = []
     for h in hits[:MAX_RESULTS_PER_RUN]:
         src = h.get("_source", {})
+        display_names = src.get("display_names") or []
+        entity_name = _DISPLAY_NAME_SUFFIX.sub("", display_names[0]).strip() if display_names else ""
         results.append({
             "accession":   h.get("_id", ""),
-            "entity_name": src.get("entity_name", ""),
+            "entity_name": entity_name,
             "file_date":   src.get("file_date", ""),
             "form_type":   form_type,
         })
@@ -230,10 +253,10 @@ def format_13dg_telegram(filing: dict) -> str:
     icon = "🐳" if is_activist else ("📊" if "13G" in form else "📋")
 
     type_desc = {
-        "SC 13D":   "新进主动型大仓（≥5%，可能推动变革/并购）",
-        "SC 13G":   "新进被动型大仓（≥5%，指数/ETF建仓）",
-        "SC 13D/A": "主动型仓位变动修正",
-        "SC 13G/A": "被动型仓位变动修正",
+        "SCHEDULE 13D":   "新进主动型大仓（≥5%，可能推动变革/并购）",
+        "SCHEDULE 13G":   "新进被动型大仓（≥5%，指数/ETF建仓）",
+        "SCHEDULE 13D/A": "主动型仓位变动修正",
+        "SCHEDULE 13G/A": "被动型仓位变动修正",
     }.get(form, form)
 
     lines = [

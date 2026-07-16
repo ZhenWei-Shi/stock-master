@@ -461,6 +461,17 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     except Exception:
         gates["earnings_blackout"] = {"pass": True, "note": "财报日期未知，默认通过"}
 
+    # ── Gate：发债/可转债公告事件门 ─────────────────────────
+    # 源于2026-07-15 ASTS发债公告后盘后暴跌14%的实战分析：可转债套利盘做空正股
+    # 对冲delta敞口+稀释预期是普遍机制，历史4次可比事件单日跌幅均落在-9%~-15%。
+    # 只读 data/debt_events_watchlist.json 快照（由 scheduler 09:00/14:00 刷新），
+    # 不在决策路径内发起HTTP请求。
+    try:
+        from .debt_event_monitor import check_ticker_debt_event
+        gates["debt_event"] = check_ticker_debt_event(ticker)
+    except Exception:
+        gates["debt_event"] = {"pass": True, "note": "发债事件检查跳过（模块加载失败）"}
+
     # ── 板块轮动背景门（非阻断，但影响评分） ──────────────
     # 复用已下载的 info 字段，避免在 check_sector_gate 里重复发起 HTTP 请求
     try:
