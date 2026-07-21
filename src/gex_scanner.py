@@ -253,7 +253,8 @@ def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_
                 # 未来窗口内恰好无到期日（极少见），退回最近一个到期日，避免空结果
                 candidates = expiries[:1]
 
-        oi_by_key = {}   # (strike, type) -> 跨到期日累加OI
+        oi_by_key = {}    # (strike, type) -> 跨到期日累加OI
+        oi_detail = {}    # (strike, type) -> {到期日: 该到期日的OI}，用于找主力到期日
         used_exps = []
         for exp in candidates:
             try:
@@ -264,12 +265,14 @@ def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_
                     if oi > 0:
                         k = (float(row["strike"]), "C")
                         oi_by_key[k] = oi_by_key.get(k, 0) + oi
+                        oi_detail.setdefault(k, {})[exp] = oi
                         hit = True
                 for _, row in chain.puts.iterrows():
                     oi = int(row.get("openInterest") or 0)
                     if oi > 0:
                         k = (float(row["strike"]), "P")
                         oi_by_key[k] = oi_by_key.get(k, 0) + oi
+                        oi_detail.setdefault(k, {})[exp] = oi
                         hit = True
                 if hit:
                     used_exps.append(exp)
@@ -279,7 +282,17 @@ def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_
         if not oi_by_key:
             return {"ticker": ticker, "error": "所选到期日均无有效OI数据"}
 
-        rows = [{"strike": k[0], "type": k[1], "oi": v} for k, v in oi_by_key.items()]
+        # 每个行权价标注"主力到期日"（贡献OI最多的那个）+ 涉及的到期日总数，
+        # 避免合并后看不出这堆持仓量到底集中在哪个到期日（2026-07-21用户反馈）
+        rows = []
+        for k, total in oi_by_key.items():
+            detail = oi_detail[k]
+            dominant_exp = max(detail, key=detail.get)
+            rows.append({
+                "strike": k[0], "type": k[1], "oi": total,
+                "dominant_expiry": dominant_exp,
+                "n_expiries": len(detail),
+            })
         rows.sort(key=lambda r: r["oi"], reverse=True)
 
         if len(used_exps) > 1:
@@ -308,7 +321,14 @@ def format_top_oi_telegram(result: dict) -> str:
     for r in rows:
         bar_len = max(1, round(r["oi"] / max_oi * 20))
         label = f"{r['strike']:.1f}{r['type']}"
-        bar_lines.append(f"{label:>9} {'█' * bar_len} {r['oi']:,}")
+        # 主力到期日（贡献OI最多的那个），MM/DD显示；若同一行权价跨多个
+        # 到期日都有持仓，加"+N"提示还有N个其他到期日也贡献了OI
+        dom = r.get("dominant_expiry")
+        if dom:
+            mm_dd = dom[5:].replace("-", "/")
+            extra = f"+{r['n_expiries']-1}" if r.get("n_expiries", 1) > 1 else ""
+            label = f"{label}({mm_dd}{extra})"
+        bar_lines.append(f"{label:>14} {'█' * bar_len} {r['oi']:,}")
 
     call_n = sum(1 for r in rows if r["type"] == "C")
     put_n  = len(rows) - call_n
