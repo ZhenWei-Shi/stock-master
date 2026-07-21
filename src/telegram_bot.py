@@ -350,7 +350,8 @@ def handle_command(text: str):
             "/scan             立即扫描（含板块轮动扩充）\n"
             "/sector           板块轮动排名（强制刷新）\n"
             "/hotlist          查看当日动态扫描列表\n"
-            "/gex [NVDA TSLA]           GEX伽马敞口快照（默认SPY/QQQ/NVDA）\n"
+            "/gex [NVDA TSLA]           GEX伽马敞口快照（默认大盘SPX/SPY/QQQ）\n"
+            "/oi NVDA [到期日]          单标的持仓量(OI)排行（不填到期日自动选最集中一档）\n"
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
             "/check NVDA                个股综合诊断（短线+期权+长期，大白话解读）\n"
             "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
@@ -459,8 +460,8 @@ def handle_command(text: str):
         _timed_thread(_do_hotlist, timeout=120, send_fn=send, label="/hotlist")
 
     elif cmd == "/gex":
-        # /gex 或 /gex NVDA TSLA AMD
-        custom = [p.upper() for p in parts[1:] if p.isalpha()]
+        # /gex（默认大盘SPX/SPY/QQQ）或 /gex NVDA TSLA AMD（查任意个股，"^SPX"等指数代码也支持）
+        custom = [p.upper() for p in parts[1:] if p.lstrip("^").isalpha()]
         from src.gex_scanner import GEX_DEFAULT_TICKERS
         tickers_to_scan = custom if custom else GEX_DEFAULT_TICKERS
         send(f"⏳ 正在计算 {', '.join(tickers_to_scan)} 的 GEX 快照（约30-60秒）...")
@@ -472,6 +473,24 @@ def handle_command(text: str):
             except Exception as e:
                 send(f"GEX 计算失败：{e}")
         _timed_thread(_do_gex, timeout=150, send_fn=send, label="/gex")
+
+    elif cmd == "/oi":
+        # /oi NVDA 或 /oi NVDA 2026-08-21（指定到期日）——单标的持仓量(OI)排行
+        args = parts[1:]
+        if not args or not args[0].lstrip("^").isalpha():
+            send("用法：/oi NVDA　或　/oi NVDA 2026-08-21（不填到期日则自动选OI最集中的一档）")
+            return
+        oi_ticker = args[0].upper()
+        oi_expiry = args[1] if len(args) > 1 else None
+        send(f"⏳ 正在拉取 {oi_ticker} 持仓量排行（约20-40秒）...")
+        def _do_oi():
+            try:
+                from src.gex_scanner import top_open_interest, format_top_oi_telegram
+                result = top_open_interest(oi_ticker, expiry=oi_expiry)
+                send(format_top_oi_telegram(result))
+            except Exception as e:
+                send(f"OI排行计算失败：{e}")
+        _timed_thread(_do_oi, timeout=120, send_fn=send, label="/oi")
 
     elif cmd == "/longhold":
         # /longhold 或 /longhold NVDA AAPL MSFT

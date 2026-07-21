@@ -26,7 +26,9 @@ ET = pytz.timezone("America/New_York")
 # ══════════════════════════════════════════════════════════════
 # 配置
 # ══════════════════════════════════════════════════════════════
-GEX_DEFAULT_TICKERS  = ["SPY", "QQQ", "NVDA"]
+# 2026-07-21：默认收盘快照改为只看大盘（SPX/SPY/QQQ），不再固定绑单只个股。
+# 个股期权数据改用 /gex <TICKER> 按需查询（Telegram已支持，见telegram_bot.py）。
+GEX_DEFAULT_TICKERS  = ["^SPX", "SPY", "QQQ"]
 GEX_MAX_EXPIRIES     = 3       # 最多取3个到期日（近月伽马影响最大）
 GEX_SPOT_BAND        = 0.07    # 只计算 spot ±7% 范围内的 strike
 RF_RATE              = 0.045   # 近似无风险利率（美国短期国债）
@@ -203,6 +205,92 @@ def gex_daily_snapshot(tickers: list = None) -> list:
 
 
 # ─────────────────────────────────────────────────────────────
+# 最高持仓量期权排行（Highest Open Interest Options，2026-07-21新增）
+# ─────────────────────────────────────────────────────────────
+# 跟上面的GEX计算是两回事：GEX是"算做市商对冲会怎么影响价格"，
+# 这里只是把单一到期日的calls+puts持仓量(OI)原始数据合并、按OI从高到低
+# 排序，复刻常见看盘软件"Highest Open Interest Options"图表的数据来源，
+# 不做Gamma/Black-Scholes计算，也不做spot±7%的范围过滤（要看全部行权价）。
+OI_RANK_TOP_N        = 20      # 排行榜显示条数
+OI_RANK_EXPIRY_SCAN  = 4       # 未指定到期日时，扫描前N个到期日挑OI总量最高的
+
+
+def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_N) -> dict:
+    """
+    单一到期日的期权持仓量(OI)排行。
+    expiry未指定时，自动在前 OI_RANK_EXPIRY_SCAN 个到期日中选OI总量最高的
+    一个（通常是月度期权，流动性最集中，即行情软件标注的"(m)"到期日）。
+    """
+    try:
+        tk = yf.Ticker(ticker)
+        expiries = tk.options
+        if not expiries:
+            return {"ticker": ticker, "error": "无期权数据（该标的可能未上市期权）"}
+
+        if expiry:
+            if expiry not in expiries:
+                return {"ticker": ticker,
+                        "error": f"到期日{expiry}不存在，可选：{', '.join(expiries[:6])}"}
+            candidates = [expiry]
+        else:
+            candidates = list(expiries[:OI_RANK_EXPIRY_SCAN])
+
+        best_exp, best_rows, best_total = None, [], -1
+        for exp in candidates:
+            try:
+                chain = tk.option_chain(exp)
+                rows, total = [], 0
+                for _, row in chain.calls.iterrows():
+                    oi = int(row.get("openInterest") or 0)
+                    if oi > 0:
+                        rows.append({"strike": float(row["strike"]), "type": "C", "oi": oi})
+                        total += oi
+                for _, row in chain.puts.iterrows():
+                    oi = int(row.get("openInterest") or 0)
+                    if oi > 0:
+                        rows.append({"strike": float(row["strike"]), "type": "P", "oi": oi})
+                        total += oi
+                if total > best_total:
+                    best_exp, best_rows, best_total = exp, rows, total
+            except Exception:
+                continue
+
+        if best_exp is None:
+            return {"ticker": ticker, "error": "所有到期日均无有效OI数据"}
+
+        best_rows.sort(key=lambda r: r["oi"], reverse=True)
+        return {"ticker": ticker, "expiry": best_exp, "rows": best_rows[:top_n]}
+
+    except Exception as e:
+        return {"ticker": ticker, "error": str(e)}
+
+
+def format_top_oi_telegram(result: dict) -> str:
+    """把 top_open_interest() 的结果排成文本条形图，风格对齐常见看盘软件截图。"""
+    if result.get("error"):
+        return f"⚠️ {result.get('ticker','?')}：{result['error']}"
+    rows = result.get("rows", [])
+    if not rows:
+        return f"{result.get('ticker','?')}：无持仓量数据"
+
+    display_ticker = result["ticker"].lstrip("^")
+    max_oi = max(r["oi"] for r in rows)
+    bar_lines = []
+    for r in rows:
+        bar_len = max(1, round(r["oi"] / max_oi * 20))
+        label = f"{r['strike']:.1f}{r['type']}"
+        bar_lines.append(f"{label:>9} {'█' * bar_len} {r['oi']:,}")
+
+    call_n = sum(1 for r in rows if r["type"] == "C")
+    put_n  = len(rows) - call_n
+    return (
+        f"📊 <b>{display_ticker} 最高持仓量期权</b>\n"
+        f"到期日 {result['expiry']}，前{len(rows)}项（Call {call_n} / Put {put_n}）\n"
+        f"<pre>{chr(10).join(bar_lines)}</pre>"
+    )
+
+
+# ─────────────────────────────────────────────────────────────
 # Telegram 格式化
 # ─────────────────────────────────────────────────────────────
 
@@ -223,8 +311,9 @@ def format_gex_telegram(results: list) -> str:
             if r["gex_env"] == "正伽马"
             else "机构对冲会放大波动，容易出现大涨大跌"
         )
+        display_ticker = r["ticker"].lstrip("^")  # ^SPX 等指数代码显示时去掉插入符，更好读
         lines.append(
-            f"{env_icon} <b>{r['ticker']}</b>  ${r['spot']}"
+            f"{env_icon} <b>{display_ticker}</b>  ${r['spot']}"
             f"  [{r['gex_env']}  净{r['total_gex_m']:+.0f}M]"
         )
         lines.append(f"  <i>（大白话：{env_hint}）</i>")
