@@ -22,6 +22,19 @@
   ✅ 仓位计算：激进模式3%风险，单仓上限50%（原1%+20%）
   ✅ 评分权重：修正 near_high / time_window / vwap 权重误导
   ✅ 激进模式加分项：RS>85, VCP形态, 财报加速各加分
+
+模拟盘复盘修复（2026-07-21，源于账户熔断后的复盘）：
+  背景：$2000激进模拟账户4笔平仓全部止损离场（0%胜率），触发熔断
+        （回撤-17.4%）。核查发现：Gate H此前只判断"距高点百分比"，
+        文案宣称的"VCP/杯柄突破"从未真正实现过判断逻辑，导致系统
+        实际在追"已经跑开的强势股"而非"低风险收缩后的突破点"。
+  ✅ Gate H 补上 VCP 波动收缩确认：激进模式"近高=利好"现在要求
+     近期确实出现振幅+成交量逐段收缩，否则降级为warn并扣分
+  ✅ 新增 Gate：量价背离检测（OBV方向 vs 价格方向），价涨量不涨时警示
+  ✅ entry_plan 新增 target_1_unprecedented 标注：止盈目标高于52周
+     最高价时明确提示"历史从未到达过"，避免止盈参考失真
+  ✅ 新增 Gate：MACD柱动能确认，trend门只看均线静态结构，看不出动能
+     改善/恶化，价格反弹但MACD柱持续恶化时提示背离
 """
 
 import yfinance as yf
@@ -101,6 +114,23 @@ MAX_POS_PCT_STD             = 0.25     # 标准单仓上限：25%
 # ── 出场倍率 ─────────────────────────────────────────────────
 TARGET_1_ATR_MULT           = 2.0      # 目标1：ATR×2
 TARGET_2_ATR_MULT           = 3.5      # 目标2：ATR×3.5
+
+# ── VCP 波动收缩确认（2026-07-21新增）───────────────────────
+# Minervini VCP理论：低风险突破买点要求突破前有振幅+成交量逐段收缩的整理期，
+# 而非从大幅波动直接冲上高点。回看窗口三等分，比较各段振幅/成交量。
+VCP_LOOKBACK_DAYS           = 21       # 回看窗口（约1个月交易日）
+VCP_CONTRACTION_RATIO       = 0.7      # 末段振幅需收窄至首段的70%以下才算收缩
+
+# ── 量价背离检测（2026-07-21新增）───────────────────────────
+VP_DIVERGENCE_LOOKBACK      = 20       # 量价背离判断回看天数
+
+# ── MACD 柱动能确认（2026-07-21新增）─────────────────────────
+# trend门（Gate C）只看均线排列的静态结构，看不出动能是在改善还是在恶化。
+# 用MACD柱短期变化方向补上这个盲区。
+MACD_FAST                   = 12
+MACD_SLOW                   = 26
+MACD_SIGNAL                 = 9
+MACD_MOMENTUM_LOOKBACK      = 5        # 判断MACD柱改善/恶化的回看天数
 
 # ── 期望值估算（激进模式） ───────────────────────────────────
 # ⚠️ 无统计支撑的假设值，实测数据≥15笔后自动被paper_trading实测数据替代
@@ -265,6 +295,13 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                      if trend_pass else "趋势不支持做空"),
         }
 
+    # ── Gate C2：MACD柱动能确认（2026-07-21新增） ──────────
+    # trend门只看均线排列的静态结构，看不出动能是在改善还是在恶化。
+    # 用MACD柱短期变化方向补上这个盲区——例如价格在反弹、均线结构也没破，
+    # 但MACD柱连续多日维持深度负值/持续恶化，说明动能指标并不认可这波价格
+    # 走势，此前系统完全没有捕捉这类"结构没破但动能背离"的情况。
+    gates["macd_momentum"] = _check_macd_momentum(close, direction)
+
     # ── Gate D：RSI 区间 ─────────────────────────────────
     rsi_s   = _rsi_series(close)
     rsi_now = float(rsi_s.iloc[-1])
@@ -334,6 +371,12 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                 "note": f"量比{vol_ratio:.1f}x",
             }
 
+    # ── Gate E2：量价背离（OBV方向确认） ───────────────────
+    # Gate E的量比只看单日放量，看不出"这波上涨有没有真实资金在推"。
+    # 用OBV（能量潮，方向 = 每日 sign(涨跌) × 成交量 的累计）方向是否配合价格
+    # 方向，识别"价涨量不涨"的假突破——2026-07-21模拟盘复盘发现的缺口。
+    gates["volume_price"] = _check_volume_price_divergence(close, vol, direction)
+
     # ── Gate F：VWAP 位置 ────────────────────────────────
     # VWAP 是每日09:30重置的日内指标。跨多天的累积VWAP无统计意义。
     # 激进/摆动模式：完全跳过（摆动持仓与日内VWAP无关）
@@ -399,10 +442,19 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
 
     if direction == "LONG":
         if aggressive_mode:
-            # 激进模式：接近20日高点 = 潜在突破位，是有利信号
+            # 激进模式：接近20日高点本身不再直接视为利好。
+            # 2026-07-21复盘：此前"近高=利好"没有验证Minervini VCP理论真正
+            # 要求的前置条件——突破前必须有振幅+成交量逐段收缩的整理期。
+            # 缺了这一步，等于只学了"追高"的表面，模拟盘4笔近高信号全部
+            # 买在阶段顶后止损离场。现在近高时额外核实VCP收缩是否成立。
+            vcp = _check_vcp_contraction(hist_1y)
             if pct_20h >= -2:
-                gates["near_high"] = {"pass": True,
-                                       "note": f"价格距20日高点{abs(pct_20h):.1f}%，接近突破位——等放量确认"}
+                if vcp["contracted"]:
+                    gates["near_high"] = {"pass": True,
+                                           "note": f"价格距20日高点{abs(pct_20h):.1f}%，{vcp['note']}——VCP确认的突破位"}
+                else:
+                    gates["near_high"] = {"pass": "warn",
+                                           "note": f"价格距20日高点{abs(pct_20h):.1f}%，但{vcp['note']}——未确认波动收缩，警惕追高"}
             elif pct_20h >= -10:
                 gates["near_high"] = {"pass": True,
                                        "note": f"价格在整理区间（距高点{abs(pct_20h):.1f}%），等待突破信号"}
@@ -727,6 +779,18 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         target1      = round(price + atr_val * TARGET_1_ATR_MULT if direction == "LONG" else price - atr_val * TARGET_1_ATR_MULT, 2)
         target2      = round(price + atr_val * TARGET_2_ATR_MULT if direction == "LONG" else price - atr_val * TARGET_2_ATR_MULT, 2)
 
+        # 目标价合理性检查（2026-07-21新增）：ATR倍数止盈是纯技术推算，不管
+        # 这个价位历史上有没有真正出现过。若目标价高于52周最高价，说明这是
+        # "股价过去一年从未到达过的地方"，止盈参考意义打折，需人工判断。
+        # 源起：AMD 2026-07-21 GO信号 target_1=$614.98，而AMD历史最高（含盘中）
+        # 仅$584.73（2026-06-30），目标价设在从未触及过的价位却没有任何提示。
+        target1_unprecedented = direction == "LONG" and target1 > high_52w
+        target1_note = (
+            f"⚠️ 目标1(${target1})高于52周最高价(${high_52w:.2f})，"
+            f"股价过去一年从未到达过这个位置，止盈参考意义有限，需人工判断"
+            if target1_unprecedented else None
+        )
+
         entry_plan = {
             "direction":          direction,
             "mode":               "激进动量" if aggressive_mode else "标准",
@@ -739,6 +803,8 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             "target_2":           target2,
             "target_1_gain_pct":  round(abs(target1 - price) / price * 100, 1),
             "target_2_gain_pct":  round(abs(target2 - price) / price * 100, 1),
+            "target_1_unprecedented": target1_unprecedented,
+            "target_1_note":      target1_note,
             "shares":             shares,
             "position_usd":       round(pos_size, 2),
             "position_pct":       round(pos_size / portfolio * 100, 1),
@@ -859,6 +925,108 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
+def _calc_macd_hist(close: pd.Series, fast: int = MACD_FAST, slow: int = MACD_SLOW,
+                     signal: int = MACD_SIGNAL) -> pd.Series:
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return macd_line - signal_line
+
+
+def _check_macd_momentum(close: pd.Series, direction: str,
+                          lookback: int = MACD_MOMENTUM_LOOKBACK) -> dict:
+    """
+    MACD柱动能确认：柱值当前正负不够，还要看是在改善还是在恶化。
+    价格反弹但MACD柱持续恶化（2026-07-21 ASTS实盘追踪反复观察到的形态）
+    是"动能指标不认可价格走势"的背离信号，trend门（静态均线结构）看不出来。
+    """
+    hist_series = _calc_macd_hist(close)
+    if len(hist_series) < lookback + 1:
+        return {"pass": True, "note": "数据不足，跳过MACD动能检查"}
+
+    now_h  = float(hist_series.iloc[-1])
+    prev_h = float(hist_series.iloc[-1 - lookback])
+    improving = now_h > prev_h
+
+    if direction == "LONG":
+        if now_h > 0:
+            return {"pass": True, "note": f"MACD柱{now_h:.2f}已转正，动能健康"}
+        if improving:
+            return {"pass": True,
+                    "note": f"MACD柱{now_h:.2f}仍为负，但{lookback}日内在改善（{prev_h:.2f}→{now_h:.2f}）"}
+        return {"pass": "warn",
+                "note": f"MACD柱{now_h:.2f}持续恶化（{lookback}日内{prev_h:.2f}→{now_h:.2f}），动能指标不认可价格走势"}
+    else:
+        if now_h < 0:
+            return {"pass": True, "note": f"MACD柱{now_h:.2f}已转负，动能健康"}
+        if not improving:
+            return {"pass": True,
+                    "note": f"MACD柱{now_h:.2f}仍为正，但{lookback}日内在走弱（{prev_h:.2f}→{now_h:.2f}）"}
+        return {"pass": "warn",
+                "note": f"MACD柱{now_h:.2f}持续走强（{lookback}日内{prev_h:.2f}→{now_h:.2f}），动能指标不认可下跌走势"}
+
+
+def _check_vcp_contraction(hist: pd.DataFrame, lookback: int = VCP_LOOKBACK_DAYS) -> dict:
+    """
+    检测近期是否出现波动收缩（Minervini VCP突破前置条件）。
+    把回看窗口三等分，比较各段振幅（高低价差/段内均价）与成交量是否逐段收窄。
+    真正低风险的突破买点，突破前应有振幅+成交量同步萎缩的整理期，
+    而非直接从大幅波动中冲上高点（后者是"追高"，不是"突破"）。
+    """
+    if len(hist) < lookback:
+        return {"contracted": False, "vol_drying_up": False,
+                "note": "数据不足，无法判断波动收缩"}
+    recent = hist.tail(lookback)
+    n = lookback // 3
+    stages = [recent.iloc[:n], recent.iloc[n:2 * n], recent.iloc[2 * n:]]
+    if any(s.empty for s in stages):
+        return {"contracted": False, "vol_drying_up": False, "note": "分段数据不足"}
+
+    ranges, vols = [], []
+    for s in stages:
+        avg_price = float(s["Close"].mean())
+        rng_pct = float((s["High"].max() - s["Low"].min()) / avg_price * 100) if avg_price > 0 else 0.0
+        ranges.append(rng_pct)
+        vols.append(float(s["Volume"].mean()))
+
+    contracted    = ranges[2] < ranges[0] * VCP_CONTRACTION_RATIO
+    vol_drying_up = vols[2] < vols[0]
+    return {
+        "contracted":    contracted,
+        "vol_drying_up": vol_drying_up,
+        "note": (f"振幅{ranges[0]:.1f}%→{ranges[1]:.1f}%→{ranges[2]:.1f}%"
+                 f"{'（收缩）' if contracted else '（未收缩）'}，"
+                 f"成交量{'萎缩' if vol_drying_up else '未萎缩'}"),
+    }
+
+
+def _check_volume_price_divergence(close: pd.Series, vol: pd.Series, direction: str,
+                                    lookback: int = VP_DIVERGENCE_LOOKBACK) -> dict:
+    """
+    量价背离检测：用OBV（能量潮，每日 sign(涨跌)×成交量 的累计）方向
+    是否配合股价方向，判断这波行情有没有真实资金支撑。
+    价格创新高但OBV未同步走高 = 缺乏资金支撑的假突破常见信号。
+    """
+    if len(close) < lookback + 1:
+        return {"pass": True, "note": "数据不足，跳过量价背离检查"}
+
+    price_chg = float(close.iloc[-1] - close.iloc[-lookback])
+    sign = np.sign(close.diff().fillna(0))
+    obv  = (sign * vol).cumsum()
+    obv_chg = float(obv.iloc[-1] - obv.iloc[-lookback])
+
+    if direction == "LONG":
+        if price_chg > 0 and obv_chg <= 0:
+            return {"pass": "warn",
+                    "note": f"量价背离：{lookback}日内股价上涨但OBV未同步走高，警惕缺乏真实资金支撑的假突破"}
+    else:
+        if price_chg < 0 and obv_chg >= 0:
+            return {"pass": "warn",
+                    "note": f"量价背离：{lookback}日内股价下跌但OBV未同步走低，警惕空头动能不足"}
+    return {"pass": True, "note": f"量价配合：{lookback}日内股价与OBV方向一致"}
+
+
 def _calc_atr(hist: pd.DataFrame, period: int = 14) -> float:
     tr = pd.concat([
         hist["High"] - hist["Low"],
@@ -876,8 +1044,9 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
         # 激进模式权重：
         # - 趋势、RSI、成交量是核心（权重高）
         # - 时间窗口权重低（摆动交易时间不敏感）
-        # - near_high 在激进模式已反向，不扣分
         # - VWAP 被跳过，不扣分
+        # 2026-07-21修复：near_high 现在会在VCP未确认时给warn，需要真实
+        # 扣分体现风险，不能再固定0（否则warn等于白设）；同步给量价背离定权重。
         deduct = {
             "time_window":   10,   # 摆动模式时间限制少（仅开盘/收盘5分钟屏蔽）
             "trend":         25,   # 核心：趋势方向是激进策略最重要的
@@ -885,7 +1054,9 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "volume":        15,   # 核心：放量是突破有效性的关键
             "stop_distance": 20,   # 核心：止损太大/太小都危险
             "vwap":           0,   # 激进/摆动跳过，不扣分
-            "near_high":      0,   # 激进模式近高是利好，不扣分
+            "near_high":     10,   # VCP未确认的近高=追高风险，warn扣一半
+            "volume_price":  10,   # 量价背离：价涨量不涨，warn扣一半
+            "macd_momentum": 10,   # MACD柱持续恶化=动能不认可，warn扣一半
         }
     else:
         # 标准模式权重
@@ -897,6 +1068,8 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "stop_distance": 15,
             "vwap":           8,   # 日内VWAP有参考价值（已修正为当日VWAP）
             "near_high":      5,   # 保守模式接近高点略有压力
+            "volume_price":   8,   # 量价背离：价涨量不涨，warn扣一半
+            "macd_momentum":  8,   # MACD柱持续恶化=动能不认可，warn扣一半
         }
 
     for key, cost in deduct.items():
