@@ -18,7 +18,7 @@ GEX（伽马敞口）收盘快照
 
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 ET = pytz.timezone("America/New_York")
@@ -214,15 +214,18 @@ def gex_daily_snapshot(tickers: list = None) -> list:
 # 默认（不指定到期日）合并本自然月内所有未到期的到期日，而不是只挑
 # 单一到期日——同一行权价跨到期日的OI相加，给出本月整体持仓分布。
 OI_RANK_TOP_N        = 20      # 排行榜显示条数
+OI_RANK_MONTHS_AHEAD = 3        # 合并未来N个月内的到期日，排除更远期LEAPS
 
 
 def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_N) -> dict:
     """
     期权持仓量(OI)排行。
-    expiry未指定时（2026-07-21起变更）：合并当前自然月内所有尚未到期的
-    到期日（可能含多个周期权+一个月度期权）的calls+puts，同一行权价跨
-    到期日的OI相加，给出"本月整体持仓分布"，而非只挑单一到期日。
-    expiry指定时：仍可查任意单一到期日（用法不变）。
+    expiry未指定时（2026-07-21变更为"未来3个月"，此前是"本自然月"）：合并
+    未来 OI_RANK_MONTHS_AHEAD 个月内所有尚未到期的到期日（周期权+月度期权）
+    的calls+puts，同一行权价跨到期日OI相加。排除更远期的LEAPS——一只股票
+    未到期到期日全量可能有15-30+个（远至2028年），LEAPS跟近月合并意义不大
+    （近期投机 vs 长期布局性质不同），且逐个拉期权链耗时会明显变长。
+    expiry指定时：仍可查任意单一到期日（用法不变，可查LEAPS）。
     """
     try:
         tk = yf.Ticker(ticker)
@@ -236,17 +239,18 @@ def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_
                         "error": f"到期日{expiry}不存在，可选：{', '.join(expiries[:6])}"}
             candidates = [expiry]
         else:
-            today = datetime.now(ET).date()
+            today  = datetime.now(ET).date()
+            cutoff = today + timedelta(days=OI_RANK_MONTHS_AHEAD * 30)
             candidates = []
             for e in expiries:
                 try:
                     d = datetime.strptime(e, "%Y-%m-%d").date()
-                    if d >= today and d.year == today.year and d.month == today.month:
+                    if today <= d <= cutoff:
                         candidates.append(e)
                 except Exception:
                     continue
             if not candidates:
-                # 本自然月已无未到期期权（如月底几天），退回最近一个到期日，避免空结果
+                # 未来窗口内恰好无到期日（极少见），退回最近一个到期日，避免空结果
                 candidates = expiries[:1]
 
         oi_by_key = {}   # (strike, type) -> 跨到期日累加OI
@@ -279,7 +283,7 @@ def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_
         rows.sort(key=lambda r: r["oi"], reverse=True)
 
         if len(used_exps) > 1:
-            expiry_label = f"{used_exps[0]}~{used_exps[-1]}（本月合并{len(used_exps)}档到期日）"
+            expiry_label = f"{used_exps[0]}~{used_exps[-1]}（未来{OI_RANK_MONTHS_AHEAD}个月合并{len(used_exps)}档到期日，不含更远期LEAPS）"
         else:
             expiry_label = used_exps[0] if used_exps else candidates[0]
 
