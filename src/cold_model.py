@@ -28,13 +28,23 @@
         （回撤-17.4%）。核查发现：Gate H此前只判断"距高点百分比"，
         文案宣称的"VCP/杯柄突破"从未真正实现过判断逻辑，导致系统
         实际在追"已经跑开的强势股"而非"低风险收缩后的突破点"。
-  ✅ Gate H 补上 VCP 波动收缩确认：激进模式"近高=利好"现在要求
-     近期确实出现振幅+成交量逐段收缩，否则降级为warn并扣分
-  ✅ 新增 Gate：量价背离检测（OBV方向 vs 价格方向），价涨量不涨时警示
+  ✅ 新增 VCP 波动收缩检测 / MACD柱动能检测 / OBV量价背离检测
   ✅ entry_plan 新增 target_1_unprecedented 标注：止盈目标高于52周
      最高价时明确提示"历史从未到达过"，避免止盈参考失真
-  ✅ 新增 Gate：MACD柱动能确认，trend门只看均线静态结构，看不出动能
-     改善/恶化，价格反弹但MACD柱持续恶化时提示背离
+
+判断条件冗余性审查修复（2026-07-21，同日第二轮）：
+  背景：审查全部15个判断条件发现，VCP收缩/MACD动能/OBV量价背离/
+        RS跑赢SPY/机构资金流向/期权流向这六项分别独立加减分，本质
+        上都在回答同一个问题"这波价格走势有没有真实资金支撑"，会让
+        同一个根因被重复计算（例如同一天AMD同时触发MACD恶化+量价
+        背离两个独立warn）。
+  ✅ Gate H（near_high）回归纯定位判断，不再兼职判断VCP是否收缩
+  ✅ 移除独立的 macd_momentum / volume_price gate，移除 RS>85 /
+     智能资金流向 / 期权UOA流向的独立加减分
+  ✅ 新增"动能确认综合指数"：上述六项合成一个 -N..+N 的分数，正值
+     走bonus加分，负值走bonus扣分（只计算一次，不再重复扣分/加分）
+  ✅ 空头挤压(逼空)信号机制不同（靠空头回补而非资金真实认可），
+     继续保留为独立加分项，不并入综合指数
 """
 
 import yfinance as yf
@@ -131,6 +141,14 @@ MACD_FAST                   = 12
 MACD_SLOW                   = 26
 MACD_SIGNAL                 = 9
 MACD_MOMENTUM_LOOKBACK      = 5        # 判断MACD柱改善/恶化的回看天数
+
+# ── 动能确认综合指数（2026-07-21新增，族群3合并）─────────────
+# VCP收缩/MACD动能/OBV量价背离/相对强度/机构资金/期权流向六项信号合成一个
+# 分数，避免同一"是否有真实支撑"的判断被重复加减分。见cold_decision()内
+# "动能确认综合指数"注释。
+CONV_STRONG_THRESHOLD       = 3        # 综合分≥此值才算"确认强"，给bonus
+CONV_MAX_BONUS               = 15       # 单次最多加分
+CONV_MAX_PENALTY             = 15       # 单次最多扣分
 
 # ── 期望值估算（激进模式） ───────────────────────────────────
 # ⚠️ 无统计支撑的假设值，实测数据≥15笔后自动被paper_trading实测数据替代
@@ -295,12 +313,8 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                      if trend_pass else "趋势不支持做空"),
         }
 
-    # ── Gate C2：MACD柱动能确认（2026-07-21新增） ──────────
-    # trend门只看均线排列的静态结构，看不出动能是在改善还是在恶化。
-    # 用MACD柱短期变化方向补上这个盲区——例如价格在反弹、均线结构也没破，
-    # 但MACD柱连续多日维持深度负值/持续恶化，说明动能指标并不认可这波价格
-    # 走势，此前系统完全没有捕捉这类"结构没破但动能背离"的情况。
-    gates["macd_momentum"] = _check_macd_momentum(close, direction)
+    # 【2026-07-21族群3合并】MACD柱动能检查移到下方"动能确认综合指数"里，
+    # 不再单独设Gate——原因见该处注释。
 
     # ── Gate D：RSI 区间 ─────────────────────────────────
     rsi_s   = _rsi_series(close)
@@ -371,11 +385,7 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                 "note": f"量比{vol_ratio:.1f}x",
             }
 
-    # ── Gate E2：量价背离（OBV方向确认） ───────────────────
-    # Gate E的量比只看单日放量，看不出"这波上涨有没有真实资金在推"。
-    # 用OBV（能量潮，方向 = 每日 sign(涨跌) × 成交量 的累计）方向是否配合价格
-    # 方向，识别"价涨量不涨"的假突破——2026-07-21模拟盘复盘发现的缺口。
-    gates["volume_price"] = _check_volume_price_divergence(close, vol, direction)
+    # 【2026-07-21族群3合并】OBV量价背离检查移到下方"动能确认综合指数"里。
 
     # ── Gate F：VWAP 位置 ────────────────────────────────
     # VWAP 是每日09:30重置的日内指标。跨多天的累积VWAP无统计意义。
@@ -429,12 +439,10 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         gates["stop_distance"] = {"pass": True,
                                    "note": f"1.5ATR止损{stop_pct:.1f}%（${stop_d:.2f}），合理"}
 
-    # ── Gate H：价格位置 ──────────────────────────────────
-    # 【算法修正】原逻辑将"接近新高"标为警告，与动量突破理论相反。
-    # Minervini/O'Neil：在VCP/杯柄突破点买入 = 历史新高附近，这正是最强买点。
-    # 正确逻辑：
-    #   激进/动量模式：近新高 = 突破候选，有利信号
-    #   保守模式：在高位且未放量突破时保持警惕
+    # ── Gate H：价格位置（纯定位，不判断"好不好"） ─────────
+    # 【2026-07-21族群3合并】本门只回答"现价相对近期高点在哪个位置"这一个
+    # 定位问题，不再兼职判断"这个位置是不是真突破"（那是VCP该管的事，
+    # 已并入下方"动能确认综合指数"，避免同一信号在两处重复判断）。
     high_20d   = float(close.tail(20).max())
     high_52w   = float(close.tail(252).max()) if len(close) >= 252 else high_20d
     pct_20h    = (price - high_20d) / high_20d * 100
@@ -442,19 +450,10 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
 
     if direction == "LONG":
         if aggressive_mode:
-            # 激进模式：接近20日高点本身不再直接视为利好。
-            # 2026-07-21复盘：此前"近高=利好"没有验证Minervini VCP理论真正
-            # 要求的前置条件——突破前必须有振幅+成交量逐段收缩的整理期。
-            # 缺了这一步，等于只学了"追高"的表面，模拟盘4笔近高信号全部
-            # 买在阶段顶后止损离场。现在近高时额外核实VCP收缩是否成立。
-            vcp = _check_vcp_contraction(hist_1y)
+            # 激进模式：只做位置分类，是否"利好"交给动能确认指数判断
             if pct_20h >= -2:
-                if vcp["contracted"]:
-                    gates["near_high"] = {"pass": True,
-                                           "note": f"价格距20日高点{abs(pct_20h):.1f}%，{vcp['note']}——VCP确认的突破位"}
-                else:
-                    gates["near_high"] = {"pass": "warn",
-                                           "note": f"价格距20日高点{abs(pct_20h):.1f}%，但{vcp['note']}——未确认波动收缩，警惕追高"}
+                gates["near_high"] = {"pass": True,
+                                       "note": f"价格距20日高点{abs(pct_20h):.1f}%，处于突破位——是否有效见动能确认指数"}
             elif pct_20h >= -10:
                 gates["near_high"] = {"pass": True,
                                        "note": f"价格在整理区间（距高点{abs(pct_20h):.1f}%），等待突破信号"}
@@ -582,23 +581,10 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             bonus_notes.append(f"板块资金加速流入（+{SECTOR_ACCEL_BONUS}）")
 
     # ── 激进模式额外加分项 ────────────────────────────────
+    # 【2026-07-21族群3合并】RS>85(跑赢SPY)判断移到下方"动能确认综合指数"，
+    # 不再单独在这里加分——它跟VCP/MACD/OBV/资金流向本质是同一族信号。
     if aggressive_mode:
-        # RS > 85 加分（系统已在九关里检测，这里用简化指标）
-        try:
-            ret_3m = float((close.iloc[-1] - close.iloc[-63]) / close.iloc[-63]) if len(close) >= 63 else 0
-            spy_hist = yf.Ticker("SPY").history(period="3mo")
-            spy_3m   = float((spy_hist["Close"].iloc[-1] - spy_hist["Close"].iloc[-63])
-                              / spy_hist["Close"].iloc[-63]) if len(spy_hist) >= 63 else 0
-            outperform = ret_3m - spy_3m
-            if outperform > 0.15:
-                bonus += 10
-                bonus_notes.append(f"跑赢SPY {outperform*100:.0f}%（+10分）")
-            elif outperform > 0.05:
-                bonus += 5
-                bonus_notes.append(f"跑赢SPY {outperform*100:.0f}%（+5分）")
-        except Exception:
-            pass
-        # 财报加速
+        # 财报加速（基本面信号，跟"动能确认"族群无关，保留独立）
         rev_growth = info.get("revenueGrowth")
         if rev_growth and float(rev_growth) > 0.25:
             bonus += 8
@@ -663,42 +649,104 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     except Exception:
         pass
 
-    # ── 机构追踪加分（智能资金共振）────────────────────────
-    # 无论标准/激进，有机构信号都加分（上限+20，不影响一票否决逻辑）
+    # ── 空头挤压加分（独立机制，不并入动能确认指数）────────
+    # 逼空靠的是空头被迫回补，不是"资金真实认可"，跟下面VCP/MACD/OBV/RS/
+    # 智能资金/期权流向这一族信号的驱动机制不同，继续保留为独立加分项。
     try:
-        from .smart_money import detect_unusual_options, smart_money_flow, detect_short_squeeze
-        # 期权流向（v2）：bid/ask位置推断主动买方方向，比纯Vol/OI更可信但仍是弱信号
-        # 加分权重从±10/8 收窄至±5/3（置信度折扣）
-        uoa = detect_unusual_options(ticker)
-        if uoa.get("ok"):
-            if uoa.get("bias") == "bullish" and abs(uoa.get("net_call_flow", 0)) > 300:
-                bonus += 5
-                bonus_notes.append(
-                    f"期权Call主动买入主导（净流向{uoa.get('net_call_flow',0):+.0f}手，+5，弱信号）"
-                )
-            elif uoa.get("bias") == "bearish" and direction == "LONG":
-                bonus -= 3
-                bonus_notes.append(
-                    f"期权Put主动买入（净流向{uoa.get('net_put_flow',0):+.0f}手，-3，可能对冲）"
-                )
-
-        # 智能资金流向：收盘段净流入 +10
-        smf = smart_money_flow(ticker)
-        if smf.get("ok") and smf.get("smf_bias") == "bullish":
-            bonus += 10
-            bonus_notes.append(f"智能资金收盘净流入（+10）")
-        elif smf.get("ok") and smf.get("smf_bias") == "bearish" and direction == "LONG":
-            bonus -= 8
-            bonus_notes.append(f"机构尾盘出货警告（-8）")
-
-        # 空头挤压：高挤压潜力做多 +5
+        from .smart_money import detect_short_squeeze
         if direction == "LONG":
             sqz = detect_short_squeeze(ticker)
             if sqz.get("ok") and sqz.get("squeeze_score", 0) >= 60:
-                bonus += 5
-                bonus_notes.append(f"逼空潜力高（空仓{sqz['short_float_pct']}%，+5）")
+                bonus += SQUEEZE_BONUS
+                bonus_notes.append(f"逼空潜力高（空仓{sqz['short_float_pct']}%，+{SQUEEZE_BONUS}）")
+    except Exception:
+        pass
+
+    # ── 动能确认综合指数（2026-07-21族群3合并） ────────────
+    # 源起：VCP波动收缩、MACD柱动能、OBV量价背离、相对强度(RS vs SPY)、
+    # 机构资金流向、期权流向——这六个信号本质上都在回答同一个问题："这波
+    # 价格走势有没有真实资金/动能支撑"，此前各自独立加减分，会让同一个
+    # 根因被重复计算（例如今天AMD同时触发MACD恶化+量价背离两个独立warn，
+    # 其实是一件事的两种表现）。现在先合成一个单一指数，正值走bonus（跟
+    # 之前"加分"的语义一致），负值走gate warn（只扣一次，不再重复扣分）。
+    # 每一项无论正负都记note，且note里带上具体加减分——避免"净分是负的，
+    # 但列表里混进一条其实是正面的信号"这种读起来自相矛盾的情况。
+    conviction = 0
+    conviction_notes = []
+
+    def _conv(delta: int, label: str):
+        nonlocal conviction
+        conviction += delta
+        conviction_notes.append(f"{label}({delta:+d})")
+
+    vcp = _check_vcp_contraction(hist_1y)
+    _conv(2, "VCP波动收缩确认") if vcp["contracted"] else _conv(-1, "VCP未收缩")
+
+    macd_conv = _check_macd_momentum(close, direction)
+    _conv(1, "MACD动能健康") if macd_conv["pass"] is True else _conv(-2, "MACD动能恶化")
+
+    vp_conv = _check_volume_price_divergence(close, vol, direction)
+    _conv(1, "量价(OBV)配合") if vp_conv["pass"] is True else _conv(-2, "量价背离(OBV)")
+
+    if aggressive_mode:
+        try:
+            ret_3m = float((close.iloc[-1] - close.iloc[-63]) / close.iloc[-63]) if len(close) >= 63 else 0
+            spy_hist_rs = yf.Ticker("SPY").history(period="3mo")
+            spy_3m = float((spy_hist_rs["Close"].iloc[-1] - spy_hist_rs["Close"].iloc[-63])
+                           / spy_hist_rs["Close"].iloc[-63]) if len(spy_hist_rs) >= 63 else 0
+            outperform = ret_3m - spy_3m
+            if outperform > 0.15:
+                _conv(3, f"跑赢SPY{outperform*100:.0f}%")
+            elif outperform > 0.05:
+                _conv(1, f"跑赢SPY{outperform*100:.0f}%")
+            elif outperform < -0.05:
+                _conv(-1, f"跑输SPY{abs(outperform)*100:.0f}%")
+        except Exception:
+            pass
+
+    try:
+        from .smart_money import detect_unusual_options, smart_money_flow
+        # 期权流向（v2）：bid/ask位置推断主动买方方向，比纯Vol/OI更可信但仍是弱信号
+        uoa = detect_unusual_options(ticker)
+        if uoa.get("ok"):
+            if uoa.get("bias") == "bullish" and abs(uoa.get("net_call_flow", 0)) > 300:
+                _conv(1, f"期权Call主导(净{uoa.get('net_call_flow',0):+.0f}手)")
+            elif uoa.get("bias") == "bearish" and direction == "LONG":
+                _conv(-1, f"期权Put主导(净{uoa.get('net_put_flow',0):+.0f}手)")
+
+        smf = smart_money_flow(ticker)
+        if smf.get("ok") and smf.get("smf_bias") == "bullish":
+            _conv(2, "机构资金净流入")
+        elif smf.get("ok") and smf.get("smf_bias") == "bearish" and direction == "LONG":
+            _conv(-2, "机构尾盘出货")
     except Exception:
         pass  # 智能资金模块失败不影响主流程
+
+    # 注意：本指数在 hard_fail / score 计算之后才拿到完整数据（依赖智能资金/
+    # 期权模块的异步查询），跟earnings_quality/宏观扣分是同一处境——不能指望
+    # _calc_score的deduct表捡到它（那张表在此之前已经算完分了），所以正值/
+    # 负值都直接进 bonus，而不是设成gate去走deduct机制（那样负值会失效）。
+    if conviction >= CONV_STRONG_THRESHOLD:
+        conv_bonus = min(CONV_MAX_BONUS, conviction)
+        bonus += conv_bonus
+        bonus_notes.append(f"动能确认强（{conviction:+d}：{'、'.join(conviction_notes)}，+{conv_bonus}）")
+        gates["momentum_conviction"] = {
+            "pass": True,
+            "note": f"动能确认强（{conviction:+d}）：{'、'.join(conviction_notes)}",
+        }
+    elif conviction >= 0:
+        gates["momentum_conviction"] = {
+            "pass": True,
+            "note": f"动能确认中性（{conviction:+d}）：{'、'.join(conviction_notes) if conviction_notes else '无明显信号'}",
+        }
+    else:
+        conv_penalty = min(CONV_MAX_PENALTY, abs(conviction) * 2)
+        bonus -= conv_penalty
+        bonus_notes.append(f"动能确认弱（{conviction:+d}，扣{conv_penalty}分）：{'、'.join(conviction_notes)}")
+        gates["momentum_conviction"] = {
+            "pass": "warn",
+            "note": f"动能确认弱（{conviction:+d}，负面信号占多数）：{'、'.join(conviction_notes)}",
+        }
 
     # insider 信号已移除：Form 4 是1-3年长周期视角，与1-5天摆动模型时间框架不对齐
     # 会把技术面死叉的股票(55→67)推成GO，产生系统性假信号。insider仍在long_hold中使用。
@@ -1047,6 +1095,9 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
         # - VWAP 被跳过，不扣分
         # 2026-07-21修复：near_high 现在会在VCP未确认时给warn，需要真实
         # 扣分体现风险，不能再固定0（否则warn等于白设）；同步给量价背离定权重。
+        # 2026-07-21族群3合并：near_high回归纯定位判断（不再兼职判断VCP），
+        # macd_momentum/volume_price不再是独立gate，改为"动能确认综合指数"
+        # 统一在函数尾部通过bonus加减分（该处注释解释了为什么不能用这张表）。
         deduct = {
             "time_window":   10,   # 摆动模式时间限制少（仅开盘/收盘5分钟屏蔽）
             "trend":         25,   # 核心：趋势方向是激进策略最重要的
@@ -1054,9 +1105,7 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "volume":        15,   # 核心：放量是突破有效性的关键
             "stop_distance": 20,   # 核心：止损太大/太小都危险
             "vwap":           0,   # 激进/摆动跳过，不扣分
-            "near_high":     10,   # VCP未确认的近高=追高风险，warn扣一半
-            "volume_price":  10,   # 量价背离：价涨量不涨，warn扣一半
-            "macd_momentum": 10,   # MACD柱持续恶化=动能不认可，warn扣一半
+            "near_high":      0,   # 纯定位判断，近高本身不扣分（激进模式）
         }
     else:
         # 标准模式权重
@@ -1068,8 +1117,6 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "stop_distance": 15,
             "vwap":           8,   # 日内VWAP有参考价值（已修正为当日VWAP）
             "near_high":      5,   # 保守模式接近高点略有压力
-            "volume_price":   8,   # 量价背离：价涨量不涨，warn扣一半
-            "macd_momentum":  8,   # MACD柱持续恶化=动能不认可，warn扣一半
         }
 
     for key, cost in deduct.items():
