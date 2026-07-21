@@ -208,18 +208,21 @@ def gex_daily_snapshot(tickers: list = None) -> list:
 # 最高持仓量期权排行（Highest Open Interest Options，2026-07-21新增）
 # ─────────────────────────────────────────────────────────────
 # 跟上面的GEX计算是两回事：GEX是"算做市商对冲会怎么影响价格"，
-# 这里只是把单一到期日的calls+puts持仓量(OI)原始数据合并、按OI从高到低
-# 排序，复刻常见看盘软件"Highest Open Interest Options"图表的数据来源，
-# 不做Gamma/Black-Scholes计算，也不做spot±7%的范围过滤（要看全部行权价）。
+# 这里只是把calls+puts持仓量(OI)原始数据合并、按OI从高到低排序，复刻
+# 常见看盘软件"Highest Open Interest Options"图表的数据来源，不做
+# Gamma/Black-Scholes计算，也不做spot±7%的范围过滤（要看全部行权价）。
+# 默认（不指定到期日）合并本自然月内所有未到期的到期日，而不是只挑
+# 单一到期日——同一行权价跨到期日的OI相加，给出本月整体持仓分布。
 OI_RANK_TOP_N        = 20      # 排行榜显示条数
-OI_RANK_EXPIRY_SCAN  = 4       # 未指定到期日时，扫描前N个到期日挑OI总量最高的
 
 
 def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_N) -> dict:
     """
-    单一到期日的期权持仓量(OI)排行。
-    expiry未指定时，自动在前 OI_RANK_EXPIRY_SCAN 个到期日中选OI总量最高的
-    一个（通常是月度期权，流动性最集中，即行情软件标注的"(m)"到期日）。
+    期权持仓量(OI)排行。
+    expiry未指定时（2026-07-21起变更）：合并当前自然月内所有尚未到期的
+    到期日（可能含多个周期权+一个月度期权）的calls+puts，同一行权价跨
+    到期日的OI相加，给出"本月整体持仓分布"，而非只挑单一到期日。
+    expiry指定时：仍可查任意单一到期日（用法不变）。
     """
     try:
         tk = yf.Ticker(ticker)
@@ -233,33 +236,55 @@ def top_open_interest(ticker: str, expiry: str = None, top_n: int = OI_RANK_TOP_
                         "error": f"到期日{expiry}不存在，可选：{', '.join(expiries[:6])}"}
             candidates = [expiry]
         else:
-            candidates = list(expiries[:OI_RANK_EXPIRY_SCAN])
+            today = datetime.now(ET).date()
+            candidates = []
+            for e in expiries:
+                try:
+                    d = datetime.strptime(e, "%Y-%m-%d").date()
+                    if d >= today and d.year == today.year and d.month == today.month:
+                        candidates.append(e)
+                except Exception:
+                    continue
+            if not candidates:
+                # 本自然月已无未到期期权（如月底几天），退回最近一个到期日，避免空结果
+                candidates = expiries[:1]
 
-        best_exp, best_rows, best_total = None, [], -1
+        oi_by_key = {}   # (strike, type) -> 跨到期日累加OI
+        used_exps = []
         for exp in candidates:
             try:
                 chain = tk.option_chain(exp)
-                rows, total = [], 0
+                hit = False
                 for _, row in chain.calls.iterrows():
                     oi = int(row.get("openInterest") or 0)
                     if oi > 0:
-                        rows.append({"strike": float(row["strike"]), "type": "C", "oi": oi})
-                        total += oi
+                        k = (float(row["strike"]), "C")
+                        oi_by_key[k] = oi_by_key.get(k, 0) + oi
+                        hit = True
                 for _, row in chain.puts.iterrows():
                     oi = int(row.get("openInterest") or 0)
                     if oi > 0:
-                        rows.append({"strike": float(row["strike"]), "type": "P", "oi": oi})
-                        total += oi
-                if total > best_total:
-                    best_exp, best_rows, best_total = exp, rows, total
+                        k = (float(row["strike"]), "P")
+                        oi_by_key[k] = oi_by_key.get(k, 0) + oi
+                        hit = True
+                if hit:
+                    used_exps.append(exp)
             except Exception:
                 continue
 
-        if best_exp is None:
-            return {"ticker": ticker, "error": "所有到期日均无有效OI数据"}
+        if not oi_by_key:
+            return {"ticker": ticker, "error": "所选到期日均无有效OI数据"}
 
-        best_rows.sort(key=lambda r: r["oi"], reverse=True)
-        return {"ticker": ticker, "expiry": best_exp, "rows": best_rows[:top_n]}
+        rows = [{"strike": k[0], "type": k[1], "oi": v} for k, v in oi_by_key.items()]
+        rows.sort(key=lambda r: r["oi"], reverse=True)
+
+        if len(used_exps) > 1:
+            expiry_label = f"{used_exps[0]}~{used_exps[-1]}（本月合并{len(used_exps)}档到期日）"
+        else:
+            expiry_label = used_exps[0] if used_exps else candidates[0]
+
+        return {"ticker": ticker, "expiry": expiry_label, "rows": rows[:top_n],
+                "expiries_used": used_exps}
 
     except Exception as e:
         return {"ticker": ticker, "error": str(e)}

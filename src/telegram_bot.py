@@ -351,7 +351,8 @@ def handle_command(text: str):
             "/sector           板块轮动排名（强制刷新）\n"
             "/hotlist          查看当日动态扫描列表\n"
             "/gex [NVDA TSLA]           GEX伽马敞口快照（默认大盘SPX/SPY/QQQ）\n"
-            "/oi NVDA [到期日]          单标的持仓量(OI)排行（不填到期日自动选最集中一档）\n"
+            "/oi NVDA [到期日]          单标的持仓量(OI)排行（不填到期日默认合并本月所有未到期到期日）\n"
+            "/uoa NVDA                  检测个股期权异常大单（Vol/OI比值异常，2026-07-21新增）\n"
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
             "/check NVDA                个股综合诊断（短线+期权+长期，大白话解读）\n"
             "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
@@ -475,10 +476,10 @@ def handle_command(text: str):
         _timed_thread(_do_gex, timeout=150, send_fn=send, label="/gex")
 
     elif cmd == "/oi":
-        # /oi NVDA 或 /oi NVDA 2026-08-21（指定到期日）——单标的持仓量(OI)排行
+        # /oi NVDA（默认合并本月所有未到期到期日）或 /oi NVDA 2026-08-21（指定单一到期日）
         args = parts[1:]
         if not args or not args[0].lstrip("^").isalpha():
-            send("用法：/oi NVDA　或　/oi NVDA 2026-08-21（不填到期日则自动选OI最集中的一档）")
+            send("用法：/oi NVDA　或　/oi NVDA 2026-08-21（不填到期日默认合并本月所有未到期到期日）")
             return
         oi_ticker = args[0].upper()
         oi_expiry = args[1] if len(args) > 1 else None
@@ -491,6 +492,23 @@ def handle_command(text: str):
             except Exception as e:
                 send(f"OI排行计算失败：{e}")
         _timed_thread(_do_oi, timeout=120, send_fn=send, label="/oi")
+
+    elif cmd == "/uoa":
+        # /uoa NVDA —— 按需检测该股票期权链是否有异常大单（Vol/OI比值异常）
+        args = parts[1:]
+        if not args or not args[0].isalpha():
+            send("用法：/uoa NVDA（检测当前是否有异常期权大单）")
+            return
+        uoa_ticker = args[0].upper()
+        send(f"⏳ 正在检测 {uoa_ticker} 期权异常大单（约20-40秒）...")
+        def _do_uoa():
+            try:
+                from src.smart_money import detect_large_orders, format_large_orders_telegram
+                result = detect_large_orders(uoa_ticker)
+                send(format_large_orders_telegram(result))
+            except Exception as e:
+                send(f"异常大单检测失败：{e}")
+        _timed_thread(_do_uoa, timeout=120, send_fn=send, label="/uoa")
 
     elif cmd == "/longhold":
         # /longhold 或 /longhold NVDA AAPL MSFT

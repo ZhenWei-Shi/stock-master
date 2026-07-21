@@ -225,6 +225,135 @@ def detect_unusual_options(ticker: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
+# 1b. 异常大单检测（2026-07-21新增，Telegram /uoa 指令）
+# ─────────────────────────────────────────────────────────────
+# 跟上面 detect_unusual_options() 不同：那个算的是整条期权链的净流向
+# 偏向（一个汇总方向），这里是找具体哪个行权价出现了"当日成交量远超
+# 现有未平仓量"的异常大单——Vol/OI比值高，说明是新开的大仓位，不是老
+# 仓位换手。用的正是本文件顶部一直定义着但从未被调用过的
+# UOA_EXTREME_RATIO/UOA_NORMAL_RATIO等阈值常量。
+
+def detect_large_orders(ticker: str) -> dict:
+    """
+    扫描个股期权链（近MAX_EXPIRATIONS个到期日，spot±10%范围内），找出
+    Vol/OI比值异常的行权价，按新增权利金金额从高到低排序。
+
+    两档severity：
+      EXTREME：Vol/OI≥UOA_EXTREME_RATIO(3.0) 且 Vol≥UOA_EXTREME_VOL(500)
+      NORMAL： Vol/OI≥UOA_NORMAL_RATIO(2.0)  且 Vol≥UOA_NORMAL_VOL(200)
+    """
+    try:
+        tk   = yf.Ticker(ticker)
+        # 用分钟级数据拿精确报价时间戳；日线数据收盘后时间戳固定是00:00:00，
+        # 不够精确。盘中能拿到真实到分钟的最新价，收盘后则是当天最后一分钟。
+        hist = tk.history(period="1d", interval="1m")
+        if hist.empty:
+            hist = tk.history(period="1d")   # 分钟级数据缺失时兜底用日线
+        if hist.empty:
+            return {"ok": False, "reason": f"{ticker} 无价格数据"}
+        price      = float(hist["Close"].iloc[-1])
+        quote_time = hist.index[-1]
+
+        exps = tk.options
+        if not exps:
+            return {"ok": False, "reason": "无期权数据"}
+
+        alerts = []
+        for exp in exps[:MAX_EXPIRATIONS]:
+            try:
+                chain = tk.option_chain(exp)
+                for df, opt_type in [(chain.calls, "CALL"), (chain.puts, "PUT")]:
+                    if df.empty:
+                        continue
+                    for _, row in df.iterrows():
+                        strike = float(row.get("strike") or 0)
+                        vol    = int(row.get("volume") or 0)
+                        oi     = int(row.get("openInterest") or 0)
+                        if strike <= 0 or oi <= 0 or vol < UOA_NORMAL_VOL:
+                            continue
+                        if abs(strike - price) / price > 0.10:
+                            continue  # 只看spot±10%，远OTM通常是噪音
+
+                        ratio = vol / oi
+                        if ratio >= UOA_EXTREME_RATIO and vol >= UOA_EXTREME_VOL:
+                            severity = "EXTREME"
+                        elif ratio >= UOA_NORMAL_RATIO and vol >= UOA_NORMAL_VOL:
+                            severity = "NORMAL"
+                        else:
+                            continue
+
+                        last = float(row.get("lastPrice") or 0)
+                        bid  = float(row.get("bid") or 0)
+                        ask  = float(row.get("ask") or 0)
+                        iv   = float(row.get("impliedVolatility") or 0)
+
+                        alerts.append({
+                            "expiry":   exp,
+                            "type":     opt_type,
+                            "strike":   strike,
+                            "volume":   vol,
+                            "oi":       oi,
+                            "ratio":    round(ratio, 1),
+                            "notional": vol * last * 100,
+                            "bid":      bid,
+                            "ask":      ask,
+                            "iv":       round(iv * 100, 1),
+                            "severity": severity,
+                        })
+            except Exception:
+                continue
+
+        alerts.sort(key=lambda a: a["notional"], reverse=True)
+        return {
+            "ok":         True,
+            "ticker":     ticker,
+            "price":      round(price, 2),
+            "quote_time": str(quote_time),
+            "alerts":     alerts,
+        }
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
+def format_large_orders_telegram(result: dict) -> str:
+    """把 detect_large_orders() 的结果格式化为Telegram警报文本。"""
+    if not result.get("ok"):
+        return f"⚠️ {result.get('ticker', '?')}：{result.get('reason', '检测失败')}"
+
+    ticker     = result["ticker"]
+    alerts     = result["alerts"]
+    now_et     = datetime.now(ET).strftime("%Y-%m-%d %H:%M ET")
+    quote_time = result["quote_time"]
+    price      = result["price"]
+
+    if not alerts:
+        return (
+            f"✅ <b>{ticker}期权检查</b>\n"
+            f"时间：{now_et}\n"
+            f"股价：${price}（行情时间 {quote_time}）\n"
+            f"未发现异常大单（Vol/OI均低于{UOA_NORMAL_RATIO}x或成交量不足{UOA_NORMAL_VOL}张）"
+        )
+
+    lines = [
+        f"🚨 <b>{ticker}期权异动</b>",
+        f"时间：{now_et}",
+        f"股价：${price}（行情时间 {quote_time}）",
+        "",
+    ]
+    for a in alerts[:8]:
+        icon = "🔥" if a["severity"] == "EXTREME" else "⚡"
+        lines.append(
+            f"{icon} {a['expiry']} {a['type']} ${a['strike']:g}: "
+            f"新增{a['volume']}张，增量权利金${a['notional']/1000:.1f}K，"
+            f"当日量/OI={a['ratio']}x，Bid/Ask ${a['bid']:.2f}/${a['ask']:.2f}，"
+            f"IV {a['iv']}%"
+        )
+    if len(alerts) > 8:
+        lines.append(f"\n...另有{len(alerts)-8}条未显示")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
 # 2. 做市商 Gamma 敞口（GEX）
 # ─────────────────────────────────────────────────────────────
 
