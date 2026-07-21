@@ -13,8 +13,16 @@
 
 import feedparser
 import re
+import os
+import json
+import pytz
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+ET = pytz.timezone("America/New_York")
+_DATA = os.path.join(os.path.dirname(__file__), "..", "data")
+_NEWS_EVENT_SNAPSHOT = os.path.join(_DATA, "news_event_watchlist.json")
+_NEWS_EVENT_MAX_AGE_HOURS = 6   # 09:00/14:00两次刷新，间隔约5小时，留余量判定陈旧
 
 # ── 情绪关键词 ─────────────────────────────────────────────────
 _HARD_BLOCK = [
@@ -199,6 +207,157 @@ def batch_news_filter(tickers: list, hours: int = 48) -> dict:
         "blocked":  blocked,
         "neutral":  neutral,
         "warnings": warnings,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# cold_model 集成接口：news_event gate（2026-07-21新增）
+# ─────────────────────────────────────────────────────────────
+# 设计结论（多轮审查后确定，详见对话记录，不在代码里重复展开）：
+#   1. 硬否决判断只信Yahoo个股专属RSS（weight=3那一档），不用综合RSS
+#      按ticker正则过滤出的结果——后者存在"文章确实提到了这只股票，但
+#      敏感词说的是别的公司"这种归属歧义，无法用正则完全排除。
+#   2. 不做否定语境过滤（如"avoids delisted"）——"公司denies fraud"这类
+#      新闻本身往往就是坏消息（指控存在，不是被排除），用词语邻近关系
+#      做否定判断反而会把真正的坏消息过滤掉，风险比不过滤更大。
+#   3. 因此只做warn强力扣分，不做pass=False硬否决（跟debt_event不同，
+#      debt_event基于SEC结构化文件事实，这里是关键词模糊匹配，精确度
+#      不到"一票否决"的信任门槛）。
+#   4. 按ticker分key存快照，模式抄debt_event_monitor.py，cold_model只读
+#      快照零网络请求。
+
+def _yahoo_hard_block_check(ticker: str, hours: int = 48) -> dict:
+    """
+    只用Yahoo个股专属RSS做硬性负面新闻关键词检测，记录具体命中的文章
+    （而不是笼统的"命中了这些词"），供人工核实用。
+    """
+    articles = []
+    for entry in _ticker_rss(ticker):
+        age = _entry_age_hours(entry)
+        if age > hours:
+            continue
+        title   = getattr(entry, "title", "") or ""
+        summary = getattr(entry, "summary", "") or ""
+        articles.append({"title": title, "summary": summary[:200], "age_h": round(age, 1)})
+
+    hit_articles = []
+    hit_words = set()
+    for a in articles:
+        text = (a["title"] + " " + a["summary"]).lower()
+        matched = [w for w in _HARD_BLOCK if w in text]
+        if matched:
+            hit_words.update(matched)
+            hit_articles.append({"title": a["title"], "matched": matched})
+
+    return {
+        "article_count": len(articles),
+        "hard_block":    bool(hit_articles),
+        "hard_reasons":  sorted(hit_words),
+        "hit_articles":  hit_articles[:3],   # 最多留3条，够人工核实即可
+    }
+
+
+def _load_news_event_snapshot() -> dict:
+    if not os.path.exists(_NEWS_EVENT_SNAPSHOT):
+        return {}
+    try:
+        with open(_NEWS_EVENT_SNAPSHOT, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_news_event_snapshot(snapshot: dict):
+    os.makedirs(_DATA, exist_ok=True)
+    tmp = _NEWS_EVENT_SNAPSHOT + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False, indent=2, default=str)
+    os.replace(tmp, _NEWS_EVENT_SNAPSHOT)
+
+
+def run_news_event_monitor(watchlist: list) -> dict:
+    """
+    扫描watchlist每只股票的Yahoo个股新闻，写入按ticker分key的快照文件。
+    供scheduler在09:00/14:00调用（跟debt_event_monitor同一节奏）。
+
+    健康监控（2026-07-21新增）：Reuters/AP两个RSS源此前已静默失效很久
+    都没人发现，为避免Yahoo源哪天也这样"悄悄失明"却让gate一直误判成
+    "无负面新闻"，这里检测——如果watchlist里≥半数股票本次刷新拉到0篇
+    文章（对活跃股票这不正常），打印告警日志，不影响本次快照正常写入。
+    """
+    wl = watchlist or []
+    if not wl:
+        return {"ok": True, "checked": 0, "hard_blocked": [], "note": "watchlist为空，跳过"}
+
+    snapshot = _load_news_event_snapshot()
+    zero_article_count = 0
+    hard_blocked = []
+
+    for ticker in wl:
+        ticker = ticker.upper()
+        try:
+            r = _yahoo_hard_block_check(ticker)
+        except Exception as e:
+            r = {"article_count": 0, "hard_block": False, "hard_reasons": [], "hit_articles": [], "error": str(e)}
+
+        if r["article_count"] == 0:
+            zero_article_count += 1
+        if r["hard_block"]:
+            hard_blocked.append(ticker)
+
+        snapshot[ticker] = {
+            "article_count": r["article_count"],
+            "hard_block":    r["hard_block"],
+            "hard_reasons":  r["hard_reasons"],
+            "hit_articles":  r["hit_articles"],
+            "checked_at":    str(datetime.now(ET)),
+        }
+
+    _save_news_event_snapshot(snapshot)
+
+    if len(wl) >= 3 and zero_article_count >= len(wl) / 2:
+        print(f"[NewsEvent] ⚠️ 健康告警：{zero_article_count}/{len(wl)}只股票本次拉到0篇Yahoo新闻，"
+              f"疑似RSS源失效（历史上Reuters/AP就发生过这种静默失效），建议人工核实feed是否还能访问")
+
+    return {
+        "ok": True,
+        "checked": len(wl),
+        "hard_blocked": hard_blocked,
+        "zero_article_count": zero_article_count,
+        "note": (f"发现{len(hard_blocked)}只命中硬性负面关键词：{hard_blocked}"
+                 if hard_blocked else "无命中，全部正常"),
+    }
+
+
+def check_ticker_news_event(ticker: str) -> dict:
+    """
+    从快照读取该ticker的新闻事件检查结果（不发起HTTP请求，供cold_model.py调用）。
+    快照缺失/过期时一律按"无负面新闻"处理，不用陈旧数据做判断。
+    只返回 pass=True 或 "warn"，不返回 False——精确度不足以支撑硬否决，
+    详见文件顶部本节的设计结论。
+    """
+    snapshot = _load_news_event_snapshot()
+    entry = snapshot.get(ticker.upper())
+    if not entry:
+        return {"pass": True, "note": "新闻快照无记录（不在watchlist或尚未刷新），按无负面新闻处理"}
+
+    try:
+        checked_at = datetime.fromisoformat(str(entry["checked_at"]))
+        age_h = (datetime.now(ET) - checked_at).total_seconds() / 3600
+        if age_h > _NEWS_EVENT_MAX_AGE_HOURS:
+            return {"pass": True, "note": f"新闻快照已{age_h:.1f}小时，建议刷新，暂按无负面新闻处理"}
+    except Exception:
+        pass
+
+    if not entry.get("hard_block"):
+        return {"pass": True, "note": f"近48h新闻正常（{entry.get('article_count', 0)}篇）"}
+
+    reasons = "、".join(entry.get("hard_reasons", []))
+    hit = entry.get("hit_articles", [])
+    example = f"，如《{hit[0]['title'][:60]}》" if hit else ""
+    return {
+        "pass": "warn",
+        "note": f"近48h新闻命中敏感词[{reasons}]{example}，关键词匹配精确度有限仅作强力警示，建议人工核实后再决定",
     }
 
 

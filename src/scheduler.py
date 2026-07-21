@@ -505,15 +505,38 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[Breadth] 宏观广度刷新失败：{e}")
                 return ("breadth", None)
 
-        # ── 任务1 / 2 / 4 / 5 / 6 并行执行 ───────────────────────
+        def _task_news_event():
+            """新闻事件快照（Yahoo个股RSS硬性负面关键词），2026-07-21新增。
+            供 cold_model.py 的 news_event gate 全天读取。命中时才推送Telegram
+            （正常情况——即大多数时候——不发消息，避免刷屏）。"""
+            try:
+                from src.news_aggregator import run_news_event_monitor
+                wl  = _latest_watchlist()
+                rne = run_news_event_monitor(wl)
+                if rne["hard_blocked"]:
+                    print(f"[NewsEvent] 命中{len(rne['hard_blocked'])}只：{rne['hard_blocked']}")
+                    if use_telegram:
+                        send_telegram(
+                            f"📰 <b>新闻警示</b>\n命中硬性负面关键词：{', '.join(rne['hard_blocked'])}\n"
+                            f"（关键词匹配非100%精确，建议人工核实后再决定是否规避）"
+                        )
+                else:
+                    print(f"[NewsEvent] 快照已刷新（{rne['checked']}只），无命中")
+                return ("news_event", None)
+            except Exception as e:
+                print(f"[NewsEvent] 刷新失败：{e}")
+                return ("news_event", None)
+
+        # ── 任务1 / 2 / 4 / 5 / 6 / 7 并行执行 ───────────────────
         results = {}
-        with ThreadPoolExecutor(max_workers=5) as ex:
+        with ThreadPoolExecutor(max_workers=6) as ex:
             futures = {
                 ex.submit(_task_macro):       "macro",
                 ex.submit(_task_sector):      "sector",
                 ex.submit(_task_13dg):        "13dg",
                 ex.submit(_task_debt_event):  "debt_event",
                 ex.submit(_task_breadth):     "breadth",
+                ex.submit(_task_news_event):  "news_event",
             }
             for fut in as_completed(futures):
                 kind, msg = fut.result()
@@ -569,6 +592,19 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[发债事件] 午后推送 {rde['new_count']} 条新公告")
         except Exception as e:
             print(f"[发债事件] 午后监控失败：{e}")
+
+        try:
+            from src.news_aggregator import run_news_event_monitor
+            wl = _latest_watchlist()
+            rne = run_news_event_monitor(wl)
+            if rne["hard_blocked"] and use_telegram:
+                send_telegram(
+                    f"📰 <b>新闻警示（午后刷新）</b>\n命中硬性负面关键词：{', '.join(rne['hard_blocked'])}\n"
+                    f"（关键词匹配非100%精确，建议人工核实后再决定是否规避）"
+                )
+            print(f"[NewsEvent] 午后快照已刷新（{rne['checked']}只）")
+        except Exception as e:
+            print(f"[NewsEvent] 午后刷新失败：{e}")
 
     def _intraday_check():
         """

@@ -52,6 +52,19 @@
   ✅ 新增 Gate：macro_breadth（宏观广度），只读data/breadth_snapshot.json
      快照（scheduler定时刷新），不在决策路径内发起额外网络请求；只做warn
      不做硬否决（倒挂是持续数月的慢变量，不适合像VIX单日恐慌那样一票否决）
+
+消息面补充（2026-07-21，同日第四轮，经多轮自我审查后确定）：
+  背景：src/news_aggregator.py 此前已写好个股新闻聚合+关键词情绪打分但
+        从未接入，多轮审查排除了两个方案——(1)综合RSS源存在"文章提到
+        该股票但敏感词说的是别人"的归属歧义，(2)否定语境过滤本身有副作用
+        （"公司denies fraud"往往就是坏消息，不是被排除），最终定案：
+  ✅ 新增 Gate：news_event，只信Yahoo个股专属RSS（精确度最高的一档），
+     只做warn强力扣分，不做pass=False硬否决（关键词模糊匹配精确度不到
+     debt_event那种SEC结构化文件判断的可信门槛）
+  ✅ 只读 data/news_event_watchlist.json 快照（scheduler 09:00/14:00跟
+     debt_event同步刷新），不在决策路径内发起HTTP请求
+  ✅ 快照刷新时新增健康监控：watchlist半数以上股票同批拉到0篇文章时打
+     日志告警，防止RSS源像Reuters/AP那样静默失效却让gate一直误判"正常"
 """
 
 import yfinance as yf
@@ -540,6 +553,18 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         gates["debt_event"] = check_ticker_debt_event(ticker)
     except Exception:
         gates["debt_event"] = {"pass": True, "note": "发债事件检查跳过（模块加载失败）"}
+
+    # ── Gate：新闻事件门（2026-07-21新增） ───────────────────
+    # 只信Yahoo个股专属RSS的硬性负面关键词（欺诈/破产/SEC调查等），只做
+    # warn强力扣分不做硬否决——关键词模糊匹配的精确度不如debt_event那种
+    # 基于SEC结构化文件的判断可靠，多轮审查后确定不该给它一票否决权。
+    # 只读 data/news_event_watchlist.json 快照（由 scheduler 09:00/14:00
+    # 跟debt_event同步刷新），不在决策路径内发起HTTP请求。
+    try:
+        from .news_aggregator import check_ticker_news_event
+        gates["news_event"] = check_ticker_news_event(ticker)
+    except Exception:
+        gates["news_event"] = {"pass": True, "note": "新闻事件检查跳过（模块加载失败）"}
 
     # ── 板块轮动背景门（非阻断，但影响评分） ──────────────
     # 复用已下载的 info 字段，避免在 check_sector_gate 里重复发起 HTTP 请求
@@ -1123,6 +1148,9 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "vwap":           0,   # 激进/摆动跳过，不扣分
             "near_high":      0,   # 纯定位判断，近高本身不扣分（激进模式）
             "macro_breadth": 10,   # 收益率曲线倒挂/跨资产risk-off，warn扣一半
+            "news_event":    15,   # 命中硬性负面新闻关键词，warn扣一半（=7分）
+                                    # 权重刻意压低：关键词匹配精确度不足以单独
+                                    # 把一个原本清白的信号打成ABORT，只做警示
         }
     else:
         # 标准模式权重
@@ -1135,6 +1163,7 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "vwap":           8,   # 日内VWAP有参考价值（已修正为当日VWAP）
             "near_high":      5,   # 保守模式接近高点略有压力
             "macro_breadth":  8,   # 收益率曲线倒挂/跨资产risk-off，warn扣一半
+            "news_event":    12,   # 命中硬性负面新闻关键词，warn扣一半（=6分）
         }
 
     for key, cost in deduct.items():
