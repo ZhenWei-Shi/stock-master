@@ -614,6 +614,9 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         3. 监控持仓止损/目标——原设计一天只在12:00检查一次，
            若价格在两次检查之间跌破止损位后持续下探，只能按下次检查时的市价平仓，
            实际亏损可能明显超过设计的止损距离（2026-07 复盘 MRNA/BIIB 均出现此问题）
+        4. UOA监控列表扫描（2026-07-21新增）——用户通过/uoa TICKER注册的股票，
+           只推送"今天首次出现"或"严重程度升级"的异常大单，避免同一个大单
+           每小时重复刷屏
         """
         try:
             from src.macro_filter import full_macro_report
@@ -625,6 +628,20 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             save_breadth_snapshot()
         except Exception as e:
             print(f"[Breadth] 盘中快照刷新失败：{e}")
+        try:
+            from src.smart_money import check_uoa_watchlist_for_new_alerts, format_large_orders_telegram
+            uoa_results = check_uoa_watchlist_for_new_alerts()
+            for tk, data in uoa_results.items():
+                msg = format_large_orders_telegram({
+                    "ok": True, "ticker": tk,
+                    "price": data["price"], "quote_time": data["quote_time"],
+                    "alerts": data["alerts"],
+                })
+                print(f"[UOA] {tk} 发现{len(data['alerts'])}条新异常大单")
+                if use_telegram:
+                    send_telegram(msg)
+        except Exception as e:
+            print(f"[UOA] 监控扫描失败：{e}")
         monitor_cycle(mode, use_telegram)
 
     SCHEDULE = {

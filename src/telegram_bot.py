@@ -352,7 +352,9 @@ def handle_command(text: str):
             "/hotlist          查看当日动态扫描列表\n"
             "/gex [NVDA TSLA]           GEX伽马敞口快照（默认大盘SPX/SPY/QQQ）\n"
             "/oi NVDA [到期日]          单标的持仓量(OI)排行（不填到期日默认合并本月所有未到期到期日）\n"
-            "/uoa NVDA                  检测个股期权异常大单（Vol/OI比值异常，2026-07-21新增）\n"
+            "/uoa NVDA                  检测异常大单+加入自动监控（每小时自动推送新增/升级警报）\n"
+            "/uoa NVDA off               停止监控该股票\n"
+            "/uoalist                   查看当前UOA自动监控列表\n"
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
             "/check NVDA                个股综合诊断（短线+期权+长期，大白话解读）\n"
             "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
@@ -494,13 +496,24 @@ def handle_command(text: str):
         _timed_thread(_do_oi, timeout=120, send_fn=send, label="/oi")
 
     elif cmd == "/uoa":
-        # /uoa NVDA —— 按需检测该股票期权链是否有异常大单（Vol/OI比值异常）
+        # /uoa NVDA —— 立即检测一次 + 自动加入监控列表（此后scheduler每小时
+        #             扫描，有新增/升级的异常大单会自动推送，不用再手动查）
+        # /uoa NVDA off —— 停止监控该股票
         args = parts[1:]
         if not args or not args[0].isalpha():
-            send("用法：/uoa NVDA（检测当前是否有异常期权大单）")
+            send("用法：/uoa NVDA（立即检测+加入自动监控）　/uoa NVDA off（停止监控）　/uoalist（查看监控列表）")
             return
         uoa_ticker = args[0].upper()
-        send(f"⏳ 正在检测 {uoa_ticker} 期权异常大单（约20-40秒）...")
+
+        if len(args) > 1 and args[1].lower() == "off":
+            from src.smart_money import remove_uoa_watch
+            wl = remove_uoa_watch(uoa_ticker)
+            send(f"🔕 已停止监控 {uoa_ticker}\n当前监控列表（{len(wl)}只）：{', '.join(wl) if wl else '空'}")
+            return
+
+        from src.smart_money import add_uoa_watch
+        wl = add_uoa_watch(uoa_ticker)
+        send(f"⏳ 正在检测 {uoa_ticker} 期权异常大单（约20-40秒），已加入自动监控列表（{len(wl)}只）...")
         def _do_uoa():
             try:
                 from src.smart_money import detect_large_orders, format_large_orders_telegram
@@ -509,6 +522,12 @@ def handle_command(text: str):
             except Exception as e:
                 send(f"异常大单检测失败：{e}")
         _timed_thread(_do_uoa, timeout=120, send_fn=send, label="/uoa")
+
+    elif cmd == "/uoalist":
+        from src.smart_money import get_uoa_watchlist
+        wl = get_uoa_watchlist()
+        send(f"👁 <b>UOA自动监控列表</b>（{len(wl)}只）\n{', '.join(wl) if wl else '空，用 /uoa TICKER 添加'}\n"
+             f"每小时自动扫描（盘中10:00-15:00），有新增/升级的异常大单会自动推送")
 
     elif cmd == "/longhold":
         # /longhold 或 /longhold NVDA AAPL MSFT

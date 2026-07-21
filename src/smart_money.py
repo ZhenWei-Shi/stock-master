@@ -27,6 +27,8 @@
   result = full_smart_money_scan("NVDA")
 """
 
+import os
+import json
 import yfinance as yf
 import numpy as np
 import pandas as pd
@@ -34,6 +36,10 @@ from datetime import datetime, timedelta
 import pytz
 
 ET = pytz.timezone("America/New_York")
+_DATA = os.path.join(os.path.dirname(__file__), "..", "data")
+_UOA_WATCHLIST_PATH = os.path.join(_DATA, "uoa_watchlist.json")
+_UOA_ALERTED_PATH   = os.path.join(_DATA, "uoa_alerted.json")
+_UOA_ALERTED_KEEP_DAYS = 2   # 去重记录保留天数，避免文件无限增长
 
 # ══════════════════════════════════════════════════════════════
 # 机构追踪配置常量（修改参数在此处）
@@ -351,6 +357,123 @@ def format_large_orders_telegram(result: dict) -> str:
     if len(alerts) > 8:
         lines.append(f"\n...另有{len(alerts)-8}条未显示")
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# 1c. UOA 监控列表 + 自动推送（2026-07-21新增，/uoa指令升级用）
+# ─────────────────────────────────────────────────────────────
+# 用户用 /uoa TICKER 查询后，该ticker自动加入本监控列表，scheduler每小时
+# （跟盘中止损检查同频）扫描一遍，只推送"今天第一次出现"或"严重程度从
+# NORMAL升级到EXTREME"的大单——同一个还在场上的大单不会每小时重复刷屏。
+
+def _load_uoa_watchlist() -> list:
+    if not os.path.exists(_UOA_WATCHLIST_PATH):
+        return []
+    try:
+        with open(_UOA_WATCHLIST_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_uoa_watchlist(tickers: list):
+    os.makedirs(_DATA, exist_ok=True)
+    tmp = _UOA_WATCHLIST_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(tickers, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _UOA_WATCHLIST_PATH)
+
+
+def add_uoa_watch(ticker: str) -> list:
+    """把ticker加入UOA自动监控列表，已在列表里则不重复添加。返回最新列表。"""
+    wl = _load_uoa_watchlist()
+    ticker = ticker.upper()
+    if ticker not in wl:
+        wl.append(ticker)
+        _save_uoa_watchlist(wl)
+    return wl
+
+
+def remove_uoa_watch(ticker: str) -> list:
+    """把ticker移出UOA自动监控列表。返回最新列表。"""
+    wl = _load_uoa_watchlist()
+    ticker = ticker.upper()
+    wl = [t for t in wl if t != ticker]
+    _save_uoa_watchlist(wl)
+    return wl
+
+
+def get_uoa_watchlist() -> list:
+    return _load_uoa_watchlist()
+
+
+def _load_uoa_alerted() -> dict:
+    if not os.path.exists(_UOA_ALERTED_PATH):
+        return {}
+    try:
+        with open(_UOA_ALERTED_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_uoa_alerted(data: dict):
+    os.makedirs(_DATA, exist_ok=True)
+    tmp = _UOA_ALERTED_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _UOA_ALERTED_PATH)
+
+
+def check_uoa_watchlist_for_new_alerts() -> dict:
+    """
+    扫描UOA监控列表全部ticker，只返回"今天首次出现"或"严重程度升级"的
+    异常大单（NORMAL已警告过、且这次还是NORMAL的不重复返回；NORMAL升级
+    到EXTREME会再警告一次）。
+
+    返回：{ticker: {"price":.., "quote_time":.., "alerts":[本次新增的alert...]}}
+    只包含确实有新内容要推送的ticker，供scheduler直接遍历发送。
+    """
+    watchlist = get_uoa_watchlist()
+    if not watchlist:
+        return {}
+
+    today_str = datetime.now(ET).strftime("%Y-%m-%d")
+    alerted = _load_uoa_alerted()
+    today_alerted = alerted.get(today_str, {})
+    severity_rank = {"NORMAL": 1, "EXTREME": 2}
+
+    results = {}
+    for ticker in watchlist:
+        try:
+            result = detect_large_orders(ticker)
+        except Exception:
+            continue
+        if not result.get("ok"):
+            continue
+
+        new_alerts = []
+        for a in result["alerts"]:
+            key = f"{ticker}|{a['expiry']}|{a['type']}|{a['strike']}"
+            prev = today_alerted.get(key)
+            if prev is None or severity_rank[a["severity"]] > severity_rank.get(prev, 0):
+                new_alerts.append(a)
+                today_alerted[key] = a["severity"]
+
+        if new_alerts:
+            results[ticker] = {
+                "price": result["price"],
+                "quote_time": result["quote_time"],
+                "alerts": new_alerts,
+            }
+
+    # 保存去重状态，顺带清掉超过_UOA_ALERTED_KEEP_DAYS天的旧记录避免文件无限增长
+    alerted[today_str] = today_alerted
+    cutoff = (datetime.now(ET) - timedelta(days=_UOA_ALERTED_KEEP_DAYS)).strftime("%Y-%m-%d")
+    alerted = {d: v for d, v in alerted.items() if d >= cutoff}
+    _save_uoa_alerted(alerted)
+
+    return results
 
 
 # ─────────────────────────────────────────────────────────────
