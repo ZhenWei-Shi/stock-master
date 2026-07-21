@@ -45,6 +45,13 @@
      走bonus加分，负值走bonus扣分（只计算一次，不再重复扣分/加分）
   ✅ 空头挤压(逼空)信号机制不同（靠空头回补而非资金真实认可），
      继续保留为独立加分项，不并入综合指数
+
+判断条件"增多"补充（2026-07-21，同日第三轮）：
+  背景：审查发现缺一个跟VIX/趋势/动能都不重叠的独立宏观维度——收益率曲线
+        倒挂+跨资产risk-on/off。src/market_breadth.py 此前已写好但从未接入。
+  ✅ 新增 Gate：macro_breadth（宏观广度），只读data/breadth_snapshot.json
+     快照（scheduler定时刷新），不在决策路径内发起额外网络请求；只做warn
+     不做硬否决（倒挂是持续数月的慢变量，不适合像VIX单日恐慌那样一票否决）
 """
 
 import yfinance as yf
@@ -277,6 +284,17 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     except Exception:
         vix_val = 20
         gates["vix"] = {"pass": "warn", "note": "无法获取VIX，按正常处理"}
+
+    # ── Gate B2：宏观广度（收益率曲线+跨资产risk-on/off，2026-07-21新增） ─
+    # VIX只测"今天恐不恐慌"，看不出收益率曲线倒挂/跨资产risk-off这种持续
+    # 数月的慢变量背景。只读 data/breadth_snapshot.json 快照（由scheduler
+    # 定时刷新），不在决策路径内发起额外的11个ticker实时请求。只做warn，
+    # 不做硬否决——这是持续性背景判断，不该像VIX单日恐慌那样一票否决。
+    try:
+        from .market_breadth import breadth_gate_check
+        gates["macro_breadth"] = breadth_gate_check()
+    except Exception:
+        gates["macro_breadth"] = {"pass": True, "note": "宏观广度检查跳过（模块加载失败）"}
 
     # ── Gate C：趋势方向确认（大框架） ───────────────────
     ma20 = float(close.rolling(20).mean().iloc[-1])
@@ -1093,8 +1111,6 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
         # - 趋势、RSI、成交量是核心（权重高）
         # - 时间窗口权重低（摆动交易时间不敏感）
         # - VWAP 被跳过，不扣分
-        # 2026-07-21修复：near_high 现在会在VCP未确认时给warn，需要真实
-        # 扣分体现风险，不能再固定0（否则warn等于白设）；同步给量价背离定权重。
         # 2026-07-21族群3合并：near_high回归纯定位判断（不再兼职判断VCP），
         # macd_momentum/volume_price不再是独立gate，改为"动能确认综合指数"
         # 统一在函数尾部通过bonus加减分（该处注释解释了为什么不能用这张表）。
@@ -1106,6 +1122,7 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "stop_distance": 20,   # 核心：止损太大/太小都危险
             "vwap":           0,   # 激进/摆动跳过，不扣分
             "near_high":      0,   # 纯定位判断，近高本身不扣分（激进模式）
+            "macro_breadth": 10,   # 收益率曲线倒挂/跨资产risk-off，warn扣一半
         }
     else:
         # 标准模式权重
@@ -1117,6 +1134,7 @@ def _calc_score(gates: dict, vix: float, aggressive_mode: bool = False) -> int:
             "stop_distance": 15,
             "vwap":           8,   # 日内VWAP有参考价值（已修正为当日VWAP）
             "near_high":      5,   # 保守模式接近高点略有压力
+            "macro_breadth":  8,   # 收益率曲线倒挂/跨资产risk-off，warn扣一半
         }
 
     for key, cost in deduct.items():

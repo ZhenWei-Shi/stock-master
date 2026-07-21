@@ -492,14 +492,28 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[发债事件] 监控失败：{e}")
                 return ("debt_event", None)
 
-        # ── 任务1 / 2 / 4 / 5 并行执行 ─────────────────────────
+        def _task_breadth():
+            """宏观广度快照（收益率曲线+跨资产risk-on/off），2026-07-21新增。
+            供 cold_model.py 的 macro_breadth gate 全天读取，不单独推送Telegram
+            （信息量不大，跟macro_refresh的宏观快照一起看即可，避免刷屏）。"""
+            try:
+                from src.market_breadth import save_breadth_snapshot
+                snap = save_breadth_snapshot()
+                print(f"[Breadth] 宏观广度快照已刷新：{snap.get('rs_mode')}/{snap.get('yc_signal')}")
+                return ("breadth", None)
+            except Exception as e:
+                print(f"[Breadth] 宏观广度刷新失败：{e}")
+                return ("breadth", None)
+
+        # ── 任务1 / 2 / 4 / 5 / 6 并行执行 ───────────────────────
         results = {}
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        with ThreadPoolExecutor(max_workers=5) as ex:
             futures = {
                 ex.submit(_task_macro):       "macro",
                 ex.submit(_task_sector):      "sector",
                 ex.submit(_task_13dg):        "13dg",
                 ex.submit(_task_debt_event):  "debt_event",
+                ex.submit(_task_breadth):     "breadth",
             }
             for fut in as_completed(futures):
                 kind, msg = fut.result()
@@ -560,7 +574,8 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         """
         盘中加密检查（10:00/11:00/12:00/13:00/14:05/15:00）：
         1. 刷新宏观快照——避免 macro_gate_check() 因快照超过2小时陈旧而静默跳过宏观否决保护
-        2. 监控持仓止损/目标——原设计一天只在12:00检查一次，
+        2. 刷新宏观广度快照——同理，避免 breadth_gate_check() 因快照过期而失去参考意义
+        3. 监控持仓止损/目标——原设计一天只在12:00检查一次，
            若价格在两次检查之间跌破止损位后持续下探，只能按下次检查时的市价平仓，
            实际亏损可能明显超过设计的止损距离（2026-07 复盘 MRNA/BIIB 均出现此问题）
         """
@@ -569,6 +584,11 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             full_macro_report(_latest_watchlist())
         except Exception as e:
             print(f"[Macro] 盘中快照刷新失败：{e}")
+        try:
+            from src.market_breadth import save_breadth_snapshot
+            save_breadth_snapshot()
+        except Exception as e:
+            print(f"[Breadth] 盘中快照刷新失败：{e}")
         monitor_cycle(mode, use_telegram)
 
     SCHEDULE = {
