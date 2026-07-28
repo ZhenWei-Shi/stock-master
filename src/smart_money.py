@@ -780,27 +780,52 @@ def smart_money_flow(ticker: str) -> dict:
 
         # 开盘段变化（情绪化噪音）
         open_move  = (open_vwap - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
-        # 收盘段变化（机构动作）
+        # "后12根5分钟K线"变化——理论依据是"收盘60分钟=机构动作"，但这个
+        # 理论只在真正收盘前最后一小时（15:00-16:00 ET）调用时成立。盘中
+        # 其他时段调用时，hist_5m只包含"到目前为止"的K线，iloc[-12:]取到
+        # 的其实是"最近60分钟"而非"收盘60分钟"，此时不能用"机构尾盘"这套
+        # 语义框架，否则会把盘中普通波动误读成收盘阶段的机构行为。
         close_move = (close_vwap - open_vwap) / open_vwap * 100 if open_vwap > 0 else 0.0
         # 全天净变化
         day_return = (today_close - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
 
-        # SMF 信号判断
-        if close_move > 0.3 and open_move < 0:
-            smf_signal = "🔵 强力吸筹：散户开盘恐慌卖，机构收盘积极买"
-            smf_bias   = "bullish"
-        elif close_move > 0.3 and open_move > 0:
-            smf_signal = "🟢 持续买入：开盘和收盘均有资金流入"
-            smf_bias   = "bullish"
-        elif close_move < -0.3 and open_move > 0:
-            smf_signal = "🔴 机构悄然出货：开盘散户追涨，收盘机构卖出"
-            smf_bias   = "bearish"
-        elif close_move < -0.3 and open_move < 0:
-            smf_signal = "⚫ 持续卖出：全天资金净流出"
-            smf_bias   = "bearish"
+        now_et = datetime.now(ET)
+        is_closing_window = now_et.hour >= 15  # 15:00-16:00 ET 才是真正的收盘段
+
+        # SMF 信号判断（措辞随调用时段切换："收盘段/机构"只在真正尾盘时使用，
+        # 其余时段改用中性的"近60分钟资金流向"表述，避免语义误导）
+        if is_closing_window:
+            if close_move > 0.3 and open_move < 0:
+                smf_signal = "🔵 强力吸筹：散户开盘恐慌卖，机构收盘积极买"
+                smf_bias   = "bullish"
+            elif close_move > 0.3 and open_move > 0:
+                smf_signal = "🟢 持续买入：开盘和收盘均有资金流入"
+                smf_bias   = "bullish"
+            elif close_move < -0.3 and open_move > 0:
+                smf_signal = "🔴 机构悄然出货：开盘散户追涨，收盘机构卖出"
+                smf_bias   = "bearish"
+            elif close_move < -0.3 and open_move < 0:
+                smf_signal = "⚫ 持续卖出：全天资金净流出"
+                smf_bias   = "bearish"
+            else:
+                smf_signal = "⚪ 中性：无明显机构方向"
+                smf_bias   = "neutral"
         else:
-            smf_signal = "⚪ 中性：无明显机构方向"
-            smf_bias   = "neutral"
+            if close_move > 0.3 and open_move < 0:
+                smf_signal = "🔵 近60分钟资金转强：开盘弱、近段转买"
+                smf_bias   = "bullish"
+            elif close_move > 0.3 and open_move > 0:
+                smf_signal = "🟢 近60分钟持续流入"
+                smf_bias   = "bullish"
+            elif close_move < -0.3 and open_move > 0:
+                smf_signal = "🔴 近60分钟资金转弱：开盘强、近段转卖"
+                smf_bias   = "bearish"
+            elif close_move < -0.3 and open_move < 0:
+                smf_signal = "⚫ 近60分钟持续流出"
+                smf_bias   = "bearish"
+            else:
+                smf_signal = "⚪ 中性：近60分钟无明显方向"
+                smf_bias   = "neutral"
 
         # 量能分布（收盘量 vs 开盘量）
         close_vol_pct = close_bars["Volume"].sum() / max(vol_all.sum(), 1) * 100
@@ -817,9 +842,13 @@ def smart_money_flow(ticker: str) -> dict:
             "open_vol_share_pct":  round(open_vol_pct, 1),
             "smf_signal":   smf_signal,
             "smf_bias":     smf_bias,
+            "is_closing_window": is_closing_window,
             "note": (
                 "收盘量占全天成交量的比例越高，机构意图越明确。"
                 "最后30分钟的价格方向是最可信的机构信号。"
+                if is_closing_window else
+                "当前非收盘时段（15:00 ET前），以下是近60分钟资金流向，"
+                "不代表机构收盘动作，仅供参考。"
             ),
         }
 

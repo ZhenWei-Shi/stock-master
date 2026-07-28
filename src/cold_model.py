@@ -401,20 +401,7 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     price_chg = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100) if len(close) >= 2 else 0
 
     if vol_m20 > 0:  # 仅在数据有效时设置 volume gate
-        if direction == "LONG":
-            vol_ok = vol_ratio >= 0.8 and not (price_chg < -2 and vol_ratio > 2)
-            gates["volume"] = {
-                "pass": vol_ok,
-                "note": (f"量比{vol_ratio:.1f}x，{'放量上涨' if price_chg > 0 else '量比正常'}"
-                         if vol_ok else
-                         f"量比{vol_ratio:.1f}x + 价格跌{price_chg:.1f}%，放量下跌，禁止做多"),
-            }
-        else:
-            vol_ok = vol_ratio >= 0.8
-            gates["volume"] = {
-                "pass": vol_ok,
-                "note": f"量比{vol_ratio:.1f}x",
-            }
+        gates["volume"] = _volume_gate(vol_ratio, price_chg, direction)
 
     # 【2026-07-21族群3合并】OBV量价背离检查移到下方"动能确认综合指数"里。
 
@@ -758,10 +745,11 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                 _conv(-1, f"期权Put主导(净{uoa.get('net_put_flow',0):+.0f}手)")
 
         smf = smart_money_flow(ticker)
+        closing = smf.get("is_closing_window")
         if smf.get("ok") and smf.get("smf_bias") == "bullish":
-            _conv(2, "机构资金净流入")
+            _conv(2, "机构尾盘买入" if closing else "近60分钟资金净流入")
         elif smf.get("ok") and smf.get("smf_bias") == "bearish" and direction == "LONG":
-            _conv(-2, "机构尾盘出货")
+            _conv(-2, "机构尾盘出货" if closing else "近60分钟资金净流出")
     except Exception:
         pass  # 智能资金模块失败不影响主流程
 
@@ -1116,6 +1104,29 @@ def _check_volume_price_divergence(close: pd.Series, vol: pd.Series, direction: 
             return {"pass": "warn",
                     "note": f"量价背离：{lookback}日内股价下跌但OBV未同步走低，警惕空头动能不足"}
     return {"pass": True, "note": f"量价配合：{lookback}日内股价与OBV方向一致"}
+
+
+def _volume_gate(vol_ratio: float, price_chg: float, direction: str) -> dict:
+    """
+    Gate E（成交量确认）判断逻辑。
+    LONG 方向未通过时区分两种不同失败原因，避免固定显示"放量下跌"掩盖真实原因：
+      (a) 量比<0.8x：参与度不足（缩量），不代表"放量"
+      (b) 真放量下跌：vol_ratio>2 且 price_chg<-2 同时成立
+    price_chg 为较昨收涨跌幅%（非两次读数之间的实时价差，note里需明确"较昨收"）。
+    """
+    if direction == "LONG":
+        heavy_selloff = price_chg < -2 and vol_ratio > 2
+        vol_ok = vol_ratio >= 0.8 and not heavy_selloff
+        if vol_ok:
+            note = f"量比{vol_ratio:.1f}x，{'放量上涨' if price_chg > 0 else '量比正常'}"
+        elif heavy_selloff:
+            note = f"量比{vol_ratio:.1f}x + 较昨收跌{price_chg:.1f}%，放量下跌，禁止做多"
+        else:
+            note = f"量比{vol_ratio:.1f}x，量能不足（<0.8x）参与度不够，禁止做多"
+        return {"pass": vol_ok, "note": note}
+    else:
+        vol_ok = vol_ratio >= 0.8
+        return {"pass": vol_ok, "note": f"量比{vol_ratio:.1f}x"}
 
 
 def _calc_atr(hist: pd.DataFrame, period: int = 14) -> float:
