@@ -527,35 +527,16 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[NewsEvent] 刷新失败：{e}")
                 return ("news_event", None)
 
-        def _task_short_volume():
-            """空头成交量快照（FINRA官方T+1数据），2026-08-13新增。
-            供 cold_model.py 的 short_volume gate（仅展示不否决）全天读取，
-            不单独推送Telegram（跟debt_event/news_event不同，这个信号本身
-            还在观察期，不主动打扰，需要时用 /shortvol 按需查）。"""
-            try:
-                from src.short_volume_monitor import run_short_volume_monitor
-                wl  = _latest_watchlist()
-                rsv = run_short_volume_monitor(wl)
-                if rsv.get("ok"):
-                    print(f"[ShortVolume] 快照已刷新：{rsv.get('tickers')}")
-                else:
-                    print(f"[ShortVolume] 刷新失败：{rsv.get('note')}")
-                return ("short_volume", None)
-            except Exception as e:
-                print(f"[ShortVolume] 刷新失败：{e}")
-                return ("short_volume", None)
-
-        # ── 任务1 / 2 / 4 / 5 / 6 / 7 / 8 并行执行 ───────────────
+        # ── 任务1 / 2 / 4 / 5 / 6 并行执行 ────────────────────
         results = {}
-        with ThreadPoolExecutor(max_workers=7) as ex:
+        with ThreadPoolExecutor(max_workers=6) as ex:
             futures = {
-                ex.submit(_task_macro):         "macro",
-                ex.submit(_task_sector):        "sector",
-                ex.submit(_task_13dg):          "13dg",
-                ex.submit(_task_debt_event):    "debt_event",
-                ex.submit(_task_breadth):       "breadth",
-                ex.submit(_task_news_event):    "news_event",
-                ex.submit(_task_short_volume):  "short_volume",
+                ex.submit(_task_macro):       "macro",
+                ex.submit(_task_sector):      "sector",
+                ex.submit(_task_13dg):        "13dg",
+                ex.submit(_task_debt_event):  "debt_event",
+                ex.submit(_task_breadth):     "breadth",
+                ex.submit(_task_news_event):  "news_event",
             }
             for fut in as_completed(futures):
                 kind, msg = fut.result()
@@ -587,8 +568,30 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                     f"🎯 当前热门板块：\n{sector_info}"
                 )
             print(f"[Sector] 动态 watchlist：{dyn['total']} 只（{dyn.get('note','')}）")
+
+            # ── 空头成交量快照（FINRA官方T+1数据），2026-08-13新增 ──
+            # 依赖动态watchlist（含板块轮动临时追加股），覆盖范围比固定
+            # watchlist.txt更全，避免盘中扫描到的临时股票查不到基线。
+            # 供 cold_model.py 的 short_volume gate（仅展示不否决）全天读取，
+            # 不单独推送Telegram（信号本身还在观察期，不主动打扰，需要时用
+            # /shortvol 或 /check 按需查）。
+            try:
+                from src.short_volume_monitor import run_short_volume_monitor
+                rsv = run_short_volume_monitor(dyn.get("tickers") or core_wl)
+                if rsv.get("ok"):
+                    print(f"[ShortVolume] 快照已刷新：{rsv.get('tickers')}")
+                else:
+                    print(f"[ShortVolume] 刷新失败：{rsv.get('note')}")
+            except Exception as e:
+                print(f"[ShortVolume] 刷新失败：{e}")
         except Exception as e:
             print(f"[Sector] 动态 watchlist 构建失败：{e}")
+            # 动态watchlist失败时退化用固定watchlist，仍尝试刷新空头成交量
+            try:
+                from src.short_volume_monitor import run_short_volume_monitor
+                run_short_volume_monitor(_latest_watchlist())
+            except Exception as e2:
+                print(f"[ShortVolume] 刷新失败（降级路径）：{e2}")
 
     def _afternoon_13dg():
         """14:00 午后再查一次13D/G + 发债事件（大陆时间07:00前提交的申报可能当天才出现）。"""

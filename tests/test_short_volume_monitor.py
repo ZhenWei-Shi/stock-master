@@ -166,3 +166,92 @@ class TestRunShortVolumeMonitor:
     def test_none_watchlist_skips(self):
         r = svm.run_short_volume_monitor(None)
         assert r["ok"] is True
+
+
+class TestBackfillHistory:
+    """
+    高层编排函数测试：monkeypatch _fetch_finra_file 模拟"每3天里有1天是
+    非交易日（返回None）"的日历节奏，验证 backfill_history/refresh_latest
+    真正走到底的日期计算+滚动窗口裁剪逻辑，而不只是测被它们调用的纯函数。
+    """
+
+    def _make_fake_fetch(self, monkeypatch, none_every=3):
+        calls = {"n": 0}
+
+        def _fake_fetch(d):
+            calls["n"] += 1
+            if calls["n"] % none_every == 0:
+                return None   # 模拟周末/假日
+            return {"ASTS": (100.0 + calls["n"], 200.0)}
+
+        monkeypatch.setattr(svm, "_fetch_finra_file", _fake_fetch)
+        return calls
+
+    def test_fills_target_trading_days_skipping_none_days(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(svm, "_HISTORY_FILE", str(tmp_path / "history.json"))
+        self._make_fake_fetch(monkeypatch, none_every=3)
+
+        r = svm.backfill_history(["ASTS"], days=10)
+        assert r["ok"] is True
+        assert r["days_filled"] == 10   # 目标交易日数必须真正凑够，不因None日提前退出
+
+        history = svm._load_history()
+        assert len(history["ASTS"]) == 10   # 10个有效交易日各存一条，不含None日
+
+    def test_trims_to_history_days_window(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(svm, "_HISTORY_FILE", str(tmp_path / "history.json"))
+        monkeypatch.setattr(svm, "HISTORY_DAYS", 5)   # 缩小窗口方便测试
+        self._make_fake_fetch(monkeypatch, none_every=100)   # 全是交易日，不跳过
+
+        svm.backfill_history(["ASTS"], days=8)
+        history = svm._load_history()
+        assert len(history["ASTS"]) == 5   # 超过HISTORY_DAYS的部分被裁掉
+
+    def test_stops_at_calendar_try_limit_even_if_target_not_reached(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(svm, "_HISTORY_FILE", str(tmp_path / "history.json"))
+        monkeypatch.setattr(svm, "_fetch_finra_file", lambda d: None)   # 永远拿不到数据
+
+        history, filled = svm._fill_history_backward(
+            {}, {"ASTS"}, target_days=10, max_calendar_tries=7)
+        assert filled == 0   # 不会死循环，尝试次数耗尽后老实返回0
+
+
+class TestRefreshLatest:
+    def test_appends_new_day_and_keeps_existing_history(self, tmp_path, monkeypatch):
+        import json
+        hist_file = tmp_path / "history.json"
+        hist_file.write_text(
+            json.dumps({"ASTS": {"2026-07-01": 50.0}}), encoding="utf-8")
+        monkeypatch.setattr(svm, "_HISTORY_FILE", str(hist_file))
+
+        calls = {"n": 0}
+
+        def _fake_fetch(d):
+            calls["n"] += 1
+            return {"ASTS": (60.0, 100.0)}   # 第一次尝试就拿到（昨天）
+
+        monkeypatch.setattr(svm, "_fetch_finra_file", _fake_fetch)
+        r = svm.refresh_latest(["ASTS"])
+
+        assert r["ok"] is True
+        history = svm._load_history()
+        assert "2026-07-01" in history["ASTS"]   # 旧记录保留
+        assert len(history["ASTS"]) == 2         # 新增一条
+
+    def test_returns_not_ok_when_no_file_available_within_retry_window(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(svm, "_HISTORY_FILE", str(tmp_path / "history.json"))
+        monkeypatch.setattr(svm, "_fetch_finra_file", lambda d: None)
+
+        r = svm.refresh_latest(["ASTS"])
+        assert r["ok"] is False
+        assert "未取到" in r["note"]
+
+    def test_skips_ticker_not_present_in_finra_file(self, tmp_path, monkeypatch):
+        # 停牌/退市/新上市股票当天文件里没有该ticker的行，不应崩溃，应正常跳过
+        monkeypatch.setattr(svm, "_HISTORY_FILE", str(tmp_path / "history.json"))
+        monkeypatch.setattr(svm, "_fetch_finra_file", lambda d: {"OTHER": (1.0, 2.0)})
+
+        r = svm.refresh_latest(["ASTS"])
+        assert r["ok"] is True
+        history = svm._load_history()
+        assert "ASTS" not in history
