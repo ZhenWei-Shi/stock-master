@@ -170,6 +170,21 @@ CONV_STRONG_THRESHOLD       = 3        # 综合分≥此值才算"确认强"，�
 CONV_MAX_BONUS               = 15       # 单次最多加分
 CONV_MAX_PENALTY             = 15       # 单次最多扣分
 
+# ── 回调入场路径B（2026-08-13新增）───────────────────────────
+# 强势股（RS仍要求85+，筛选池不变）不再只认"追新高突破"一种入场时机，
+# 回调到MA20支撑位企稳后同样是有效入场点，两条路径并行判定，任一满足
+# 即可，不互斥。路径B确认后走bonus加分，不做verdict硬跳过——否则会绕开
+# earnings_blackout/debt_event/news_event/macro_breadth/VIX等否决类
+# gate，变成风控后门。详见 near_high gate（Gate H）四段式判断。
+NEAR_HIGH_BREAKOUT_PCT       = -2      # 距高点在此以内 = 突破尝试区（路径A）
+PULLBACK_ZONE_MAX_PCT        = -5      # 比这浅 = 真空地带，不算路径B
+PULLBACK_ZONE_MIN_PCT        = -15     # 比这深 = 回调过深，警惕趋势已破
+PULLBACK_MA20_BUFFER         = 0.98    # 支撑缓冲：价格不跌破MA20的98%都算支撑未破
+PULLBACK_VOL_LOOKBACK_DAYS   = 20      # 缩量确认回看窗口（跟20日高点口径一致）
+PULLBACK_RSI_LOOKBACK_DAYS   = 10      # 找近期RSI低点的回看窗口
+PULLBACK_RSI_OVERSOLD        = 40      # 强势股很少真跌到经典超卖30，用更贴近实际的阈值
+PULLBACK_BONUS               = 10      # 回调企稳确认后的加分
+
 # ── 期望值估算（激进模式） ───────────────────────────────────
 # ⚠️ 无统计支撑的假设值，实测数据≥15笔后自动被paper_trading实测数据替代
 EV_WIN_RATE                 = 0.60     # 假设胜率（乐观估计，真实摆动策略约45-55%）
@@ -466,18 +481,27 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     pct_20h    = (price - high_20d) / high_20d * 100
     pct_52w    = (price - high_52w) / high_52w * 100
 
+    pullback_setup = None   # 供下方bonus区块读取，避免重复计算_check_pullback_setup
     if direction == "LONG":
         if aggressive_mode:
-            # 激进模式：只做位置分类，是否"利好"交给动能确认指数判断
-            if pct_20h >= -2:
+            # 激进模式：四段式定位判断。突破区交给动能确认指数判断是否有效
+            # （路径A）；回调区交给_check_pullback_setup判断是否企稳（路径B）；
+            # 两条路径并行，不互斥，谁先满足谁触发bonus。
+            if pct_20h >= NEAR_HIGH_BREAKOUT_PCT:
                 gates["near_high"] = {"pass": True,
                                        "note": f"价格距20日高点{abs(pct_20h):.1f}%，处于突破位——是否有效见动能确认指数"}
-            elif pct_20h >= -10:
+            elif pct_20h >= PULLBACK_ZONE_MAX_PCT:
                 gates["near_high"] = {"pass": True,
-                                       "note": f"价格在整理区间（距高点{abs(pct_20h):.1f}%），等待突破信号"}
+                                       "note": f"价格在整理区间（距高点{abs(pct_20h):.1f}%），等待突破或回调企稳信号"}
+            elif pct_20h >= PULLBACK_ZONE_MIN_PCT:
+                pullback_setup = _check_pullback_setup(close, vol, rsi_s, ma20, price)
+                gates["near_high"] = {
+                    "pass": True if pullback_setup["confirmed"] else "warn",
+                    "note": f"距20日高点{abs(pct_20h):.1f}%，回调区——{pullback_setup['note']}",
+                }
             else:
                 gates["near_high"] = {"pass": "warn",
-                                       "note": f"距20日高点{abs(pct_20h):.1f}%，整理幅度偏大，确认趋势未破"}
+                                       "note": f"距20日高点{abs(pct_20h):.1f}%，回调幅度过深，警惕趋势已破"}
         else:
             # 标准模式：接近高点时提示注意阻力，但不直接否决
             if pct_20h > -1:
@@ -691,6 +715,15 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
                 bonus_notes.append(f"逼空潜力高（空仓{sqz['short_float_pct']}%，+{SQUEEZE_BONUS}）")
     except Exception:
         pass
+
+    # ── 回调企稳加分（2026-08-13新增，路径B，独立机制不并入动能确认指数）──
+    # 判断的是"回调有没有健康结束、现在是不是好的再入场点"，跟动能确认
+    # 指数回答的"这波价格走势有没有真实资金支撑"是两个不同问题；逻辑同
+    # 上面的"空头挤压加分"——机制不同，继续保留为独立加分项，不合并重复计算。
+    # pullback_setup 在 Gate H（near_high）里已经算过，这里只读结果，不重算。
+    if pullback_setup is not None and pullback_setup["confirmed"]:
+        bonus += PULLBACK_BONUS
+        bonus_notes.append(f"回调企稳确认（{pullback_setup['note']}，+{PULLBACK_BONUS}）")
 
     # ── 动能确认综合指数（2026-07-21族群3合并） ────────────
     # 源起：VCP波动收缩、MACD柱动能、OBV量价背离、相对强度(RS vs SPY)、
@@ -1077,6 +1110,53 @@ def _check_vcp_contraction(hist: pd.DataFrame, lookback: int = VCP_LOOKBACK_DAYS
         "note": (f"振幅{ranges[0]:.1f}%→{ranges[1]:.1f}%→{ranges[2]:.1f}%"
                  f"{'（收缩）' if contracted else '（未收缩）'}，"
                  f"成交量{'萎缩' if vol_drying_up else '未萎缩'}"),
+    }
+
+
+def _check_pullback_setup(close: pd.Series, vol: pd.Series, rsi_s: pd.Series,
+                           ma20: float, price: float,
+                           lookback: int = PULLBACK_VOL_LOOKBACK_DAYS) -> dict:
+    """
+    回调企稳确认（路径B：强势股回调到支撑位后的入场判断）。
+    三个子条件都要满足才算"企稳"，缺一不可：
+      1. 支撑未破：现价仍在 MA20 支撑之上（留2%缓冲，防止盘中插针误杀）
+      2. 缩量：回调段（近lookback日高点之后到现在）的平均量明显低于
+         此前上涨段，逻辑同_check_vcp_contraction——缩量回调是正常获利
+         回吐，放量回调更可能是真出货，不是健康整理。
+      3. RSI企稳回升：近期曾跌破偏低阈值（强势股很少真跌到经典超卖30，
+         用更贴近实际的40）后，最近开始回升，不是还在下坠。
+    """
+    if len(close) < lookback + 1 or pd.isna(ma20):
+        return {"confirmed": False, "support_held": False, "vol_dried_up": False,
+                "rsi_rebounding": False, "note": "数据不足，无法判断回调企稳"}
+
+    support_held = price > ma20 * PULLBACK_MA20_BUFFER
+
+    recent = close.tail(lookback)
+    peak_pos = int(recent.values.argmax())
+    vol_recent = vol.tail(lookback)
+    pre_peak_vol  = vol_recent.iloc[:peak_pos]
+    post_peak_vol = vol_recent.iloc[peak_pos:]
+    vol_dried_up = (float(post_peak_vol.mean()) < float(pre_peak_vol.mean())
+                    if len(pre_peak_vol) > 0 and len(post_peak_vol) > 0 else False)
+
+    rsi_recent = rsi_s.tail(PULLBACK_RSI_LOOKBACK_DAYS)
+    rsi_min  = float(rsi_recent.min()) if not rsi_recent.empty else float(rsi_s.iloc[-1])
+    rsi_now  = float(rsi_s.iloc[-1])
+    rsi_prev = float(rsi_s.iloc[-2]) if len(rsi_s) >= 2 else rsi_now
+    rsi_rebounding = (rsi_min < PULLBACK_RSI_OVERSOLD and rsi_now > rsi_prev and rsi_now > rsi_min)
+
+    confirmed = support_held and vol_dried_up and rsi_rebounding
+    note = (f"MA20支撑{'未破' if support_held else '已破'}、"
+            f"回调段{'缩量' if vol_dried_up else '未缩量'}、"
+            f"RSI{'企稳回升' if rsi_rebounding else '未现回升'}"
+            f"(近{PULLBACK_RSI_LOOKBACK_DAYS}日低点{rsi_min:.0f}→现{rsi_now:.0f})")
+    return {
+        "confirmed":      confirmed,
+        "support_held":   support_held,
+        "vol_dried_up":   vol_dried_up,
+        "rsi_rebounding": rsi_rebounding,
+        "note": note,
     }
 
 

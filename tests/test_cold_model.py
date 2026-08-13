@@ -9,6 +9,7 @@ cold_model.py 核心决策引擎回归测试
   - _check_macd_momentum       MACD柱动能确认
   - _check_vcp_contraction     VCP波动收缩确认
   - _check_volume_price_divergence  OBV量价背离
+  - _check_pullback_setup      回调企稳确认（路径B：2026-08-13新增，MA20支撑+缩量+RSI回升）
   - _calc_atr                  ATR止损距离计算（含NaN兜底路径）
   - _rsi_series                RSI序列计算
 
@@ -25,6 +26,7 @@ from src.cold_model import (
     _check_macd_momentum,
     _check_vcp_contraction,
     _check_volume_price_divergence,
+    _check_pullback_setup,
     _calc_atr,
     _rsi_series,
 )
@@ -250,6 +252,65 @@ class TestVolumePriceDivergence:
         vol   = pd.Series([100, 100])
         r = _check_volume_price_divergence(close, vol, "LONG", lookback=20)
         assert r["pass"] is True
+        assert "数据不足" in r["note"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _check_pullback_setup（路径B：回调企稳确认，2026-08-13新增）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pullback_base_series():
+    """基准数据：先涨后回调，缩量+MA20支撑未破+RSI企稳回升，三项全满足。"""
+    close = pd.Series([88, 90, 92, 94, 96, 98, 100, 98, 97, 96, 95])
+    vol   = pd.Series([800, 850, 900, 950, 1000, 1050, 600, 500, 450, 400, 350])
+    rsi_s = pd.Series([60, 58, 55, 50, 45, 38, 35, 32, 35, 38, 42])
+    return close, vol, rsi_s
+
+
+class TestPullbackSetup:
+    def test_all_conditions_met_confirms(self):
+        close, vol, rsi_s = _pullback_base_series()
+        r = _check_pullback_setup(close, vol, rsi_s, ma20=92, price=95, lookback=10)
+        assert r["support_held"] is True
+        assert r["vol_dried_up"] is True
+        assert r["rsi_rebounding"] is True
+        assert r["confirmed"] is True
+
+    def test_support_broken_blocks_confirmation(self):
+        close, vol, rsi_s = _pullback_base_series()
+        # 现价跌破 MA20*0.98(=90.16)，即便缩量+RSI回升也不能算企稳
+        r = _check_pullback_setup(close, vol, rsi_s, ma20=92, price=88, lookback=10)
+        assert r["support_held"] is False
+        assert r["confirmed"] is False
+
+    def test_volume_not_drying_up_blocks_confirmation(self):
+        close, _, rsi_s = _pullback_base_series()
+        # 回调段反而放量（后段均量高于前段），不是健康整理
+        vol = pd.Series([400, 450, 500, 550, 600, 650, 900, 950, 1000, 1050, 1100])
+        r = _check_pullback_setup(close, vol, rsi_s, ma20=92, price=95, lookback=10)
+        assert r["vol_dried_up"] is False
+        assert r["confirmed"] is False
+
+    def test_rsi_still_falling_blocks_confirmation(self):
+        close, vol, _ = _pullback_base_series()
+        # RSI一路下探到现在，没有转头向上，不算"企稳回升"
+        rsi_s = pd.Series([60, 58, 55, 50, 45, 42, 40, 38, 36, 34, 32])
+        r = _check_pullback_setup(close, vol, rsi_s, ma20=92, price=95, lookback=10)
+        assert r["rsi_rebounding"] is False
+        assert r["confirmed"] is False
+
+    def test_insufficient_data_returns_false(self):
+        close = pd.Series([95, 96, 97])
+        vol   = pd.Series([500, 500, 500])
+        rsi_s = pd.Series([50, 50, 50])
+        r = _check_pullback_setup(close, vol, rsi_s, ma20=92, price=97, lookback=10)
+        assert r["confirmed"] is False
+        assert "数据不足" in r["note"]
+
+    def test_nan_ma20_returns_false(self):
+        close, vol, rsi_s = _pullback_base_series()
+        r = _check_pullback_setup(close, vol, rsi_s, ma20=float("nan"), price=95, lookback=10)
+        assert r["confirmed"] is False
         assert "数据不足" in r["note"]
 
 
