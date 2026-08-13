@@ -7,11 +7,11 @@
   P0: 空 DataFrame 访问 iloc[-1] 崩溃
   P2: pandas None→NaN，is None 检查失效（应用 pd.isna）
 
-surprise_pct 公式测试使用真实 src.scraper.calc_surprise_pct 导入。
+surprise_pct 公式测试使用真实 src.calc_utils.calc_surprise_pct 导入。
 """
 import pytest
 import pandas as pd
-from src.scraper import calc_surprise_pct
+from src.calc_utils import calc_surprise_pct
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ from src.scraper import calc_surprise_pct
 
 def _parse_earnings(df: pd.DataFrame) -> list:
     """
-    模拟 scraper.py:299-321 的解析逻辑，用于验证字段访问方式。
+    模拟 earnings_analyzer.py 里 earnings_history 的解析逻辑，用于验证字段访问方式。
     surprise_pct 调用真实 calc_surprise_pct，不内联公式。
     """
     quarters = []
