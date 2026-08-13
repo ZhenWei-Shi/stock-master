@@ -577,6 +577,20 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     except Exception:
         gates["news_event"] = {"pass": True, "note": "新闻事件检查跳过（模块加载失败）"}
 
+    # ── 空头成交量参考信号（2026-08-13新增，仅展示不参与打分/否决）───
+    # 数据源 FINRA 每日空头成交量文件，官方监管数据，非价格反推估算。
+    # pass 恒为 True：该比例包含大量做市商合规对冲盘，不等于真实看空押注，
+    # 用户明确决定先观察展示、等CONDITIONAL仓位修复（PR#3）的模拟盘样本
+    # 验证完再决定要不要正式接成会影响GO/ABORT的gate，避免同批样本混入
+    # 太多同时生效的新变量导致以后没法归因。只读 data/short_volume_history.json
+    # 快照（由 scheduler 09:00晨报刷新），不在决策路径内发起HTTP请求。
+    try:
+        from .short_volume_monitor import check_ticker_short_volume
+        sv = check_ticker_short_volume(ticker)
+        gates["short_volume"] = {"pass": True, "note": sv.get("note", "")}
+    except Exception:
+        gates["short_volume"] = {"pass": True, "note": "空头成交量检查跳过（模块加载失败）"}
+
     # ── 板块轮动背景门（非阻断，但影响评分） ──────────────
     # 复用已下载的 info 字段，避免在 check_sector_gate 里重复发起 HTTP 请求
     try:

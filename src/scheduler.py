@@ -527,16 +527,35 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[NewsEvent] 刷新失败：{e}")
                 return ("news_event", None)
 
-        # ── 任务1 / 2 / 4 / 5 / 6 / 7 并行执行 ───────────────────
+        def _task_short_volume():
+            """空头成交量快照（FINRA官方T+1数据），2026-08-13新增。
+            供 cold_model.py 的 short_volume gate（仅展示不否决）全天读取，
+            不单独推送Telegram（跟debt_event/news_event不同，这个信号本身
+            还在观察期，不主动打扰，需要时用 /shortvol 按需查）。"""
+            try:
+                from src.short_volume_monitor import run_short_volume_monitor
+                wl  = _latest_watchlist()
+                rsv = run_short_volume_monitor(wl)
+                if rsv.get("ok"):
+                    print(f"[ShortVolume] 快照已刷新：{rsv.get('tickers')}")
+                else:
+                    print(f"[ShortVolume] 刷新失败：{rsv.get('note')}")
+                return ("short_volume", None)
+            except Exception as e:
+                print(f"[ShortVolume] 刷新失败：{e}")
+                return ("short_volume", None)
+
+        # ── 任务1 / 2 / 4 / 5 / 6 / 7 / 8 并行执行 ───────────────
         results = {}
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        with ThreadPoolExecutor(max_workers=7) as ex:
             futures = {
-                ex.submit(_task_macro):       "macro",
-                ex.submit(_task_sector):      "sector",
-                ex.submit(_task_13dg):        "13dg",
-                ex.submit(_task_debt_event):  "debt_event",
-                ex.submit(_task_breadth):     "breadth",
-                ex.submit(_task_news_event):  "news_event",
+                ex.submit(_task_macro):         "macro",
+                ex.submit(_task_sector):        "sector",
+                ex.submit(_task_13dg):          "13dg",
+                ex.submit(_task_debt_event):    "debt_event",
+                ex.submit(_task_breadth):       "breadth",
+                ex.submit(_task_news_event):    "news_event",
+                ex.submit(_task_short_volume):  "short_volume",
             }
             for fut in as_completed(futures):
                 kind, msg = fut.result()

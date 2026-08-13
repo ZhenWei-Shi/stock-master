@@ -355,6 +355,7 @@ def handle_command(text: str):
             "/uoa NVDA                  检测异常大单+加入自动监控（每小时自动推送新增/升级警报）\n"
             "/uoa NVDA off               停止监控该股票\n"
             "/uoalist                   查看当前UOA自动监控列表\n"
+            "/shortvol NVDA             空头成交量参考（FINRA官方T+1数据，仅供参考不参与打分）\n"
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
             "/check NVDA                个股综合诊断（短线+期权+长期，大白话解读）\n"
             "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
@@ -528,6 +529,16 @@ def handle_command(text: str):
         wl = get_uoa_watchlist()
         send(f"👁 <b>UOA自动监控列表</b>（{len(wl)}只）\n{', '.join(wl) if wl else '空，用 /uoa TICKER 添加'}\n"
              f"每小时自动扫描（盘中10:00-15:00），有新增/升级的异常大单会自动推送")
+
+    elif cmd == "/shortvol":
+        # /shortvol NVDA —— 空头成交量参考（FINRA官方T+1数据，只读本地快照，
+        # 由 scheduler 09:00晨报刷新，秒级响应，不用像 /oi、/uoa 那样异步等待）
+        args = parts[1:]
+        if not args or not args[0].isalpha():
+            send("用法：/shortvol NVDA（FINRA官方空头成交量数据，T+1，仅供参考不参与打分）")
+            return
+        from src.short_volume_monitor import format_short_volume_telegram
+        send(format_short_volume_telegram(args[0].upper()))
 
     elif cmd == "/longhold":
         # /longhold 或 /longhold NVDA AAPL MSFT
