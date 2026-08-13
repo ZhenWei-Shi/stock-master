@@ -5,18 +5,18 @@
 若生产代码公式被改错，测试会真正失败（而非假绿）。
 
 覆盖：
-  - calc_surprise_pct (src/scraper.py)       P0回归：epsDifference×100错误
+  - calc_surprise_pct (src/calc_utils.py)    P0回归：epsDifference×100错误
   - is_accelerating   (src/sector_rotation.py) P1回归：accel加速度逻辑
-  - Kelly公式内联记录（debate.py/paper_trading.py三处相同公式，用内联+注释标记）
+  - Kelly公式内联记录（debate.py/paper_trading.py两处相同公式，用内联+注释标记）
 """
 import pytest
-from src.scraper import calc_surprise_pct
+from src.calc_utils import calc_surprise_pct
 from src.sector_rotation import is_accelerating
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Kelly Criterion
-# 公式在 debate.py:422 / paper_trading.py:548 / backtest.py:541 三处完全相同
+# 公式在 debate.py:422 / paper_trading.py:548 两处完全相同
 # 因跨文件内联（非独立函数），此处用内联副本记录预期行为；
 # 若需重构，提取为 src/utils.py::kelly() 后改为导入。
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ class TestKelly:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# calc_surprise_pct (src/scraper.py) —— 直接导入，测试真实生产代码
+# calc_surprise_pct (src/calc_utils.py) —— 直接导入，测试真实生产代码
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSurprisePct:
@@ -89,7 +89,7 @@ class TestSurprisePct:
         est=0.10，act=0.11（beat $0.01）：
           旧：0.01 × 100 = 1.0  ← 错误（无量纲）
           新：0.01 / 0.10 × 100 = 10.0%  ← 正确
-        此测试导入真实 scraper.py::calc_surprise_pct，若代码回退会真正失败。
+        此测试导入真实 calc_utils.py::calc_surprise_pct，若代码回退会真正失败。
         """
         eps_act, eps_est = 0.11, 0.10
         result = calc_surprise_pct(eps_act, eps_est)
