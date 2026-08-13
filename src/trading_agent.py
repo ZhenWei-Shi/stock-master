@@ -73,6 +73,23 @@ def build_dynamic_watchlist(core: list | None = None,
 # 主扫描函数（核心入口）
 # ─────────────────────────────────────────────────────────────
 
+def _apply_conditional_sizing(shares: int, debate_conclusion: str) -> int:
+    """
+    CONDITIONAL 信号按 debate.py 自己的建议减半仓位（debate.py:508"看多论据
+    尚可，但存在风险，建议缩小仓位50%"）。
+
+    2026-08-13复盘发现：这条建议此前只进了Telegram推送文案，从未真正影响
+    下单量——run_scan()的自动开仓量完全来自cold_decision()的entry_plan
+    （固定3%风险/50%仓位上限公式），debate的kelly_usd/建议减仓从未被读取。
+    AMD/MPC两笔实盘案例均为CONDITIONAL（debate明确标注"存在风险4pts"），
+    却仍按cold_decision给出的满仓股数下单（分别是Kelly建议仓位的2.1倍/2.5倍），
+    随后都亏损离场。这里把建议接进真正的下单逻辑。
+    """
+    if debate_conclusion == "CONDITIONAL":
+        return shares // 2
+    return shares
+
+
 def run_scan(watchlist: list, account_value: float = 2000,
              direction: str = "LONG", auto_paper: bool = True,
              mode: str = "paper") -> dict:
@@ -190,10 +207,14 @@ def run_scan(watchlist: list, account_value: float = 2000,
             ep = sig["cold"].get("entry_plan", {})
             if not ep or ep.get("shares", 0) < 1:
                 continue
+            shares = _apply_conditional_sizing(ep.get("shares", 1), sig.get("debate_conclusion"))
+            if shares < 1:
+                print(f"  ⏭️  跳过 {sig['ticker']}：CONDITIONAL减半后不足1股，风险不允许最小整股")
+                continue
             try:
                 result = open_position(
                     ticker      = sig["ticker"],
-                    shares      = ep.get("shares", 1),
+                    shares      = shares,
                     entry_price = ep.get("entry_price", sig["price"]),
                     stop_loss   = ep.get("stop_loss", sig["price"] * 0.95),
                     target      = ep.get("target_1", sig["price"] * 1.09),
@@ -207,10 +228,10 @@ def run_scan(watchlist: list, account_value: float = 2000,
                         "ticker":    sig["ticker"],
                         "trade_id":  result["trade_id"],
                         "exec_price": result["exec_price"],
-                        "shares":    ep.get("shares"),
+                        "shares":    shares,
                         "cost":      result["total_cost"],
                     })
-                    print(f"  ✅ 开仓 {sig['ticker']} × {ep.get('shares')}股 @ ${result['exec_price']:.2f}")
+                    print(f"  ✅ 开仓 {sig['ticker']} × {shares}股 @ ${result['exec_price']:.2f}")
                     if result.get("circuit_breaker_warning"):
                         print(f"    {result['circuit_breaker_warning']}")
                 else:
