@@ -271,6 +271,25 @@ def format_check_telegram(ticker: str) -> str:
         lines.append(f"  <i>（大白话：{env_hint}）</i>")
     lines.append("")
 
+    # ── 空头成交量（FINRA官方T+1数据，仅供参考不参与打分）──
+    from src.short_volume_monitor import check_ticker_short_volume
+    sv = check_ticker_short_volume(ticker)
+    sv_icon = {
+        "insufficient":  "⚪",
+        "normal":        "🟢",
+        "elevated_high": "🟡",
+        "elevated_low":  "🟡",
+        "extreme_high":  "🔴",
+        "extreme_low":   "🔴",
+    }.get(sv.get("flag"), "⚪")
+    lines.append(f"{sv_icon} <b>【空头成交量】</b>{sv['note']}")
+    if sv.get("flag") not in (None, "insufficient"):
+        lines.append(
+            "  <i>（大白话：这个比例含做市商合规对冲盘，不等于看空押注，"
+            "只有明显偏离自身历史习惯时才值得多留意）</i>"
+        )
+    lines.append("")
+
     # ── 长期质量 ──
     if lh.get("error"):
         lines.append(f"⚪ <b>【长期质量】</b>{lh['error']}")
