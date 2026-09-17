@@ -527,16 +527,31 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                 print(f"[NewsEvent] 刷新失败：{e}")
                 return ("news_event", None)
 
-        # ── 任务1 / 2 / 4 / 5 / 6 并行执行 ────────────────────
+        def _task_rate_expectation():
+            """美联储加息/降息隐含概率快照（Fed Funds期货推算），2026-09-16新增。
+            全局宏观信号（不分ticker），供 cold_model.py 的 fed_rate_expectation
+            gate 全天读取，不单独推送Telegram（跟breadth同类，信息量不大，
+            需要时用 /fedwatch 按需查）。"""
+            try:
+                from src.rate_expectations import save_rate_expectation_snapshot
+                snap = save_rate_expectation_snapshot()
+                print(f"[FedRate] 加息概率快照已刷新：{snap.get('note', '')}")
+                return ("rate_expectation", None)
+            except Exception as e:
+                print(f"[FedRate] 加息概率刷新失败：{e}")
+                return ("rate_expectation", None)
+
+        # ── 任务1 / 2 / 4 / 5 / 6 / 7 并行执行 ────────────────
         results = {}
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        with ThreadPoolExecutor(max_workers=7) as ex:
             futures = {
-                ex.submit(_task_macro):       "macro",
-                ex.submit(_task_sector):      "sector",
-                ex.submit(_task_13dg):        "13dg",
-                ex.submit(_task_debt_event):  "debt_event",
-                ex.submit(_task_breadth):     "breadth",
-                ex.submit(_task_news_event):  "news_event",
+                ex.submit(_task_macro):             "macro",
+                ex.submit(_task_sector):             "sector",
+                ex.submit(_task_13dg):               "13dg",
+                ex.submit(_task_debt_event):          "debt_event",
+                ex.submit(_task_breadth):             "breadth",
+                ex.submit(_task_news_event):          "news_event",
+                ex.submit(_task_rate_expectation):    "rate_expectation",
             }
             for fut in as_completed(futures):
                 kind, msg = fut.result()
