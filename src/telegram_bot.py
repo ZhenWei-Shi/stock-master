@@ -375,6 +375,7 @@ def handle_command(text: str):
             "/uoa NVDA off               停止监控该股票\n"
             "/uoalist                   查看当前UOA自动监控列表\n"
             "/shortvol NVDA             空头成交量参考（FINRA官方T+1数据，仅供参考不参与打分）\n"
+            "/fedwatch                  美联储加息/降息隐含概率（Fed Funds期货推算，仅供参考不参与打分）\n"
             "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
             "/check NVDA                个股综合诊断（短线+期权+长期，大白话解读）\n"
             "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
@@ -558,6 +559,12 @@ def handle_command(text: str):
             return
         from src.short_volume_monitor import format_short_volume_telegram
         send(format_short_volume_telegram(args[0].upper()))
+
+    elif cmd == "/fedwatch":
+        # /fedwatch —— 美联储加息/降息隐含概率（Fed Funds期货推算），全局宏观
+        # 信号不分ticker，只读本地快照（由 scheduler 09:00晨报刷新）
+        from src.rate_expectations import format_rate_expectation_telegram
+        send(format_rate_expectation_telegram())
 
     elif cmd == "/longhold":
         # /longhold 或 /longhold NVDA AAPL MSFT

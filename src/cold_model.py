@@ -591,6 +591,18 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     except Exception:
         gates["short_volume"] = {"pass": True, "note": "空头成交量检查跳过（模块加载失败）"}
 
+    # ── 美联储加息/降息隐含概率（2026-09-16新增，仅展示不参与打分/否决）──
+    # 数据源 CBOT 30天联邦基金利率期货（ZQ=F），跟CME官方FedWatch同一套方法论
+    # 的单档简化版。是全局宏观信号（不分ticker），跟macro_breadth同一模式：
+    # pass 恒为 True——全新信号，先观察展示，等验证稳定性后再决定是否正式
+    # 接成会影响宏观否决权重的gate。只读 data/rate_expectations_snapshot.json
+    # 快照（由 scheduler 09:00晨报刷新），不在决策路径内发起HTTP请求。
+    try:
+        from .rate_expectations import rate_expectation_gate_check
+        gates["fed_rate_expectation"] = rate_expectation_gate_check()
+    except Exception:
+        gates["fed_rate_expectation"] = {"pass": True, "note": "加息概率检查跳过（模块加载失败）"}
+
     # ── 板块轮动背景门（非阻断，但影响评分） ──────────────
     # 复用已下载的 info 字段，避免在 check_sector_gate 里重复发起 HTTP 请求
     try:
