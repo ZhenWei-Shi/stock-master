@@ -45,6 +45,14 @@ MAX_POSITION_PCT            = 0.50     # 单仓上限（账户净值50%）
 MAX_CONCURRENT_POSITIONS    = 2        # 最多同时持有2仓（$2k账户，3仓=150%仓位风险）
 MAX_TOTAL_EXPOSURE_PCT      = 0.80     # 总仓位上限80%账户净值（留20%应急缓冲）
 
+# ── 时间止损（摆动策略持仓周期防线，2026-09-16新增）────────────
+# 背景：诊断模拟盘0/9止损全灭时发现RTX/VRTX两笔分别被拖到16/22天才因
+# 价格止损离场，而策略名"AggressiveSwing"设计意图是3-10天摆动——此前
+# 完全没有跟"天数"挂钩的强制平仓机制，只要价格既不破止损也不到止盈，
+# 就会无限期持有，摆动单被拖成准长线单。用自然日（非交易日）计算，
+# 阈值对齐设计上限，跨周末的正常摆动单不会被误伤太多。
+MAX_HOLD_CALENDAR_DAYS      = 10
+
 # ── 熔断器 ───────────────────────────────────────────────────
 CB_LOSS_TRIGGER             = 5        # 连续亏损N笔触发熔断
 CB_DRAWDOWN_TRIGGER         = -6.0     # 单日回撤超过6%触发熔断（原10%与最坏路径不自洽：5笔×止损可达-20%）
@@ -417,6 +425,38 @@ def update_trailing_stop(trade_id: str, current_price: float,
 # 盯市（Mark to Market）
 # ─────────────────────────────────────────────────────────────
 
+def _check_position_alert(cur_price: float, pos: dict, now: datetime):
+    """
+    纯函数：判断单个持仓当前是否触发止损/止盈/超时告警。独立抽出，
+    便于pytest直接测试三种告警的判定与优先级，不依赖网络/文件IO。
+
+    优先级：止损 > 止盈 > 超时——价格类风控信号优先于时间类兜底信号
+    （如果价格已经跌破止损，即便同时超过持仓天数上限，也按止损处理，
+    exit_reason更准确地反映真实退出原因）。
+
+    返回 (alert, alert_type)，均无触发时为 (None, None)。
+    """
+    if cur_price <= pos["stop_loss"]:
+        return (f"⚠️ 触及止损价 ${pos['stop_loss']:.2f}！应立即执行止损", "stop_loss")
+    if cur_price >= pos["target"]:
+        return (f"✅ 达到目标价 ${pos['target']:.2f}！可考虑减仓", "target")
+
+    opened_at = pos.get("opened_at")
+    if opened_at:
+        try:
+            opened = datetime.fromisoformat(str(opened_at))
+            held_days = (now - opened).total_seconds() / 86400
+            if held_days > MAX_HOLD_CALENDAR_DAYS:
+                return (
+                    f"⏰ 已持仓{held_days:.0f}天，超过{MAX_HOLD_CALENDAR_DAYS}天摆动周期上限，建议平仓",
+                    "time_stop",
+                )
+        except Exception:
+            pass   # opened_at 格式异常时不因此阻断监控循环，跳过超时判断
+
+    return (None, None)
+
+
 def mark_to_market(mode: str = "paper") -> dict:
     """获取所有持仓的当前市值，更新账户总值。"""
     path = _LOG if mode == "paper" else _REAL
@@ -448,15 +488,8 @@ def mark_to_market(mode: str = "paper") -> dict:
         unreal_pct = (cur_price - pos["entry_price"]) / pos["entry_price"] * 100
         total_pos_val += mkt_val
 
-        # 检查是否触及止损或目标
-        alert = None
-        alert_type = None
-        if cur_price <= pos["stop_loss"]:
-            alert = f"⚠️ 触及止损价 ${pos['stop_loss']:.2f}！应立即执行止损"
-            alert_type = "stop_loss"
-        elif cur_price >= pos["target"]:
-            alert = f"✅ 达到目标价 ${pos['target']:.2f}！可考虑减仓"
-            alert_type = "target"
+        # 检查是否触及止损/目标/超过最大持仓天数
+        alert, alert_type = _check_position_alert(cur_price, pos, datetime.now(ET))
 
         open_summary.append({
             "id":           tid,
