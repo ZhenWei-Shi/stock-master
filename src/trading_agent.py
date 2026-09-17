@@ -287,11 +287,17 @@ def run_monitor(mode: str = "paper", auto_stop: bool = True) -> dict:
 
     for pos in mtm.get("open_positions", []):
         alert = pos.get("alert", "")
-        if auto_stop and pos.get("alert_type") == "stop_loss":
+        alert_type = pos.get("alert_type")
+        # time_stop：2026-09-16新增，持仓超过 MAX_HOLD_CALENDAR_DAYS（摆动
+        # 策略设计的3-10天上限）仍未触及止损/止盈时强制平仓，防止摆动单
+        # 被无限期拖成准长线单（详见 paper_trading.py 常量注释）。
+        if auto_stop and alert_type in ("stop_loss", "time_stop"):
+            is_time_stop = alert_type == "time_stop"
+            reason = "Agent超时强制平仓" if is_time_stop else "Agent自动止损"
             try:
                 r = close_position(
                     pos["id"], pos["current_price"],
-                    exit_reason="Agent自动止损",
+                    exit_reason=reason,
                     mode=mode,
                 )
                 if r.get("ok"):
@@ -299,11 +305,11 @@ def run_monitor(mode: str = "paper", auto_stop: bool = True) -> dict:
                         "ticker": pos["ticker"],
                         "trade_id": pos["id"],
                         "pnl": r["pnl"],
-                        "reason": "自动止损",
+                        "reason": "超时强制平仓" if is_time_stop else "自动止损",
                     })
-                    print(f"[Agent] 自动止损 {pos['ticker']} | P&L: ${r['pnl']:.2f}")
+                    print(f"[Agent] {reason} {pos['ticker']} | P&L: ${r['pnl']:.2f}")
             except Exception as e:
-                print(f"[Agent] 止损执行失败 {pos['ticker']}: {e}")
+                print(f"[Agent] {reason}执行失败 {pos['ticker']}: {e}")
 
     return {
         "monitor_time": datetime.now(ET).strftime("%Y-%m-%d %H:%M ET"),

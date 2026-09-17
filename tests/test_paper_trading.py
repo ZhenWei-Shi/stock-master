@@ -16,10 +16,15 @@ pytest tmp_path，绝不触碰 data/paper_trades.json 等真实生产数据文�
 close_position() 只在"待平仓时刻仍有其他持仓"才会发起 yfinance 请求获取
 实时价，本文件所有测试场景平仓时都没有其他持仓在场，因此不需要额外mock网络。
 """
+from datetime import datetime, timedelta
+
 import pytest
+import pytz
 
 import src.paper_trading as pt
 import src.feedback as fb
+
+ET = pytz.timezone("America/New_York")
 
 
 @pytest.fixture
@@ -195,6 +200,59 @@ class TestTrailingStop:
         r2 = pt.update_trailing_stop(o["trade_id"], current_price=105, trail_pct=8.0)  # 从高点回调
         assert r2["updated"] is False
         assert r2["current_stop"] == pytest.approx(stop_after_high)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _check_position_alert —— 时间止损（2026-09-16新增，诊断RTX/VRTX被拖成
+# 16/22天准长线单后补的摆动周期防线）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_pos(stop_loss=90, target=110, days_ago=0):
+    opened = datetime.now(ET) - timedelta(days=days_ago)
+    return {"stop_loss": stop_loss, "target": target, "opened_at": str(opened)}
+
+
+class TestPositionAlert:
+    def test_stop_loss_triggers_regardless_of_holding_days(self):
+        # 价格已跌破止损：即便远超最大持仓天数，也应按stop_loss处理，
+        # 不能被时间止损分支抢先/混淆——止损是最高优先级的风控信号
+        pos = _make_pos(stop_loss=90, days_ago=pt.MAX_HOLD_CALENDAR_DAYS + 5)
+        alert, alert_type = pt._check_position_alert(89, pos, datetime.now(ET))
+        assert alert_type == "stop_loss"
+
+    def test_target_triggers_before_time_stop(self):
+        pos = _make_pos(target=110, days_ago=pt.MAX_HOLD_CALENDAR_DAYS + 5)
+        alert, alert_type = pt._check_position_alert(111, pos, datetime.now(ET))
+        assert alert_type == "target"
+
+    def test_time_stop_triggers_when_price_in_range_and_overdue(self):
+        pos = _make_pos(stop_loss=90, target=110, days_ago=pt.MAX_HOLD_CALENDAR_DAYS + 1)
+        alert, alert_type = pt._check_position_alert(100, pos, datetime.now(ET))
+        assert alert_type == "time_stop"
+        assert alert is not None
+
+    def test_no_alert_when_within_hold_window(self):
+        pos = _make_pos(stop_loss=90, target=110, days_ago=pt.MAX_HOLD_CALENDAR_DAYS - 1)
+        alert, alert_type = pt._check_position_alert(100, pos, datetime.now(ET))
+        assert alert_type is None
+        assert alert is None
+
+    def test_exactly_at_threshold_does_not_trigger(self):
+        # 用 > 而非 >= 判断：正好等于上限的边界不应算超时（跟RATE_STEP等
+        # 其他gate的边界哲学一致，只有真正超出才拦截）
+        pos = _make_pos(stop_loss=90, target=110, days_ago=pt.MAX_HOLD_CALENDAR_DAYS)
+        alert, alert_type = pt._check_position_alert(100, pos, datetime.now(ET))
+        assert alert_type is None
+
+    def test_missing_opened_at_does_not_crash(self):
+        pos = {"stop_loss": 90, "target": 110}   # 无 opened_at 字段（防御性场景）
+        alert, alert_type = pt._check_position_alert(100, pos, datetime.now(ET))
+        assert alert_type is None
+
+    def test_malformed_opened_at_degrades_gracefully(self):
+        pos = {"stop_loss": 90, "target": 110, "opened_at": "not-a-real-date"}
+        alert, alert_type = pt._check_position_alert(100, pos, datetime.now(ET))
+        assert alert_type is None   # 解析失败不阻断监控循环，跳过超时判断而非抛异常
 
 
 # ─────────────────────────────────────────────────────────────────────────────

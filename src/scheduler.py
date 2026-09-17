@@ -106,14 +106,14 @@ def notify_go_signal(ticker: str, price: float, score: int,
     send_telegram(msg)
 
 
-def notify_stop_loss(ticker: str, pnl: float):
-    """止损触发通知。"""
+def notify_stop_loss(ticker: str, pnl: float, reason: str = "自动止损"):
+    """止损/超时强制平仓触发通知。reason 区分具体原因（2026-09-16新增time_stop场景）。"""
     emoji = "🔴" if pnl < 0 else "🟢"
     send_telegram(
-        f"{emoji} <b>止损平仓</b>\n"
+        f"{emoji} <b>{reason}平仓</b>\n"
         f"股票：{ticker}\n"
         f"P&L：${pnl:.2f} ({'亏损' if pnl < 0 else '盈利'})\n"
-        f"自动止损已执行"
+        f"{reason}已执行"
     )
 
 
@@ -380,7 +380,7 @@ def monitor_cycle(mode: str = "paper", use_telegram: bool = True):
 
     if closed and use_telegram:
         for c in closed:
-            notify_stop_loss(c["ticker"], c["pnl"])
+            notify_stop_loss(c["ticker"], c["pnl"], reason=c.get("reason", "自动止损"))
 
     if alerts and use_telegram:
         send_telegram(
