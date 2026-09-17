@@ -276,6 +276,9 @@ def get_economic_calendar() -> dict:
 
     events.sort(key=lambda x: abs(x["days_away"]))
 
+    # warnings 里已经按 📌昨日消化期 / 🚨今日发布 / ⚠️明日预告 三态区分好了准确文案，
+    # 下游（full_macro_report/macro_gate_check）应直接引用 warnings 原文，
+    # 不要再另外拼一句固定写死"今日XX发布"的话。
     return {
         "ok":       True,
         "today":    str(today),
@@ -668,7 +671,10 @@ def full_macro_report(watchlist: list = None) -> dict:
     vix_high = etf_sigs.get("vix_change_pct", 0) > VIX_CAUTION_PCT
 
     if high_risk_today:
-        master_action = "🛑 今日重大经济事件发布——暂停所有新开仓，等待数据消化后再操作"
+        # 用 calendar.warnings 的实际文案（区分昨日消化期/今日发布/明日预告），
+        # 不再固定写死"今日"——此前不管实际是哪天都统一显示"今日XX发布"，
+        # 在事件次日（消化期）会产生文案误报
+        master_action = "🛑 " + "；".join(calendar.get("warnings", [])) + "——暂停所有新开仓"
     elif vix_high:
         master_action = "⚠️ 市场波动上升——减少仓位，只做高确定性信号，止损收紧"
     elif top_themes:
@@ -685,6 +691,7 @@ def full_macro_report(watchlist: list = None) -> dict:
         "tickers_avoid":   tickers_avoid,
         "tickers_favor":   tickers_favor,
         "high_risk_today": high_risk_today,
+        "calendar_warnings": calendar.get("warnings", []),
         "vix_change_pct":  etf_sigs.get("vix_change_pct", 0),
     }
     snap_path = os.path.join(_DATA, "macro_snapshot.json")
@@ -757,10 +764,11 @@ def macro_gate_check(ticker: str) -> dict:
         bonus  = 0
         reasons= []
 
-        # 重大经济事件日 → 直接否决
+        # 重大经济事件日 → 直接否决（否决逻辑不变，只是文案改用实际昨日/今日/明日状态）
         if snap.get("high_risk_today"):
             block = True
-            reasons.append("今日FOMC/CPI/非农发布，禁止开新仓")
+            cal_warnings = snap.get("calendar_warnings", [])
+            reasons.append("；".join(cal_warnings) if cal_warnings else "今日FOMC/CPI/非农发布，禁止开新仓")
 
         # 硬性负面新闻
         if ticker in snap.get("tickers_avoid", []):
