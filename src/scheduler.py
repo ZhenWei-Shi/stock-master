@@ -388,9 +388,18 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
             key=lambda r: r.get("score", 0), reverse=True,
         )
         if high_score_vetoes:
+            # reason 固定格式："以下检查未通过（一票否决）：X, Y"，X/Y是gates字典的key，
+            # 逗号分隔。time_window不算真判断（只反映收盘/开盘状态），排除后如果剩下
+            # 只有trend一个，说明"就差trend这一票"——用户2026-09-21要求专门标出这种
+            # 情况，供自己手动判断要不要顶着中期均线死叉赌一把，系统本身不会自动开仓。
+            PREFIX = "以下检查未通过（一票否决）："
             lines = ["👀 <b>高分但被硬门否决</b>（仅供参考，不构成入场建议）"]
             for r in high_score_vetoes[:5]:
-                lines.append(f"• {r['ticker']} 分{r.get('score')} @ ${r.get('price', 0):.2f} — {r.get('reason','')}")
+                reason = r.get("reason", "")
+                failed = [g.strip() for g in reason.removeprefix(PREFIX).split(",")]
+                trend_only = [g for g in failed if g != "time_window"] == ["trend"]
+                tag = "⚡仅trend一票 " if trend_only else ""
+                lines.append(f"• {tag}{r['ticker']} 分{r.get('score')} @ ${r.get('price', 0):.2f} — {reason}")
             send_telegram("\n".join(lines))
 
     print(f"\n[Scheduler] 扫描周期完成 ✓\n{'='*50}")
