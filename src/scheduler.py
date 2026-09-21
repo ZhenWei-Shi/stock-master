@@ -377,12 +377,14 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
         # ── 高分但被硬门否决：单独一条可见性提示 ──────────────
         # 不影响GO信号判定/自动开仓逻辑，纯粹是把已经算出来但被扫描日志
         # 吞掉的高分记录露出来，供人工判断要不要手动多看一眼。
+        # 只用"是否真的被推过GO"（go_tickers）判断，不用verdict=="GO"——
+        # 否则cold_decision判GO但被debate否掉（AVOID/WAIT）的票会两边都
+        # 看不到：既不进GO推送，也会被verdict过滤条件挡在这条摘要外面。
         go_tickers = {s["ticker"] for s in scan_result.get("go_signals", [])}
         high_score_vetoes = sorted(
             [r for r in scan_result.get("results", [])
-             if r.get("verdict") != "GO"
-             and (r.get("score") or 0) >= HIGH_SCORE_VETO_THRESHOLD
-             and r.get("ticker") not in go_tickers],
+             if r.get("ticker") not in go_tickers
+             and (r.get("score") or 0) >= HIGH_SCORE_VETO_THRESHOLD],
             key=lambda r: r.get("score", 0), reverse=True,
         )
         if high_score_vetoes:
