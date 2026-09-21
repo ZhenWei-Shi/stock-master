@@ -51,6 +51,12 @@ DEFAULT_WATCHLIST = [
 
 _CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "scheduler_config.json")
 
+# 高分但被硬门否决的可见性阈值（仅推送提示，不触发任何交易/评分逻辑）。
+# 2026-09-21复盘：META当天动态watchlist命中后score达91，但trend死叉一票
+# 否决ABORT，而当时只推送GO信号，这条高分记录被扫描日志吞掉，用户完全没
+# 看到。远高于go_threshold(65)但仍ABORT，说明卡在单一硬门，值得人工看一眼。
+HIGH_SCORE_VETO_THRESHOLD = 80
+
 
 # ─────────────────────────────────────────────────────────────
 # Telegram 通知（免费，无需付费 API）
@@ -367,6 +373,25 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                 send_telegram(msg_sig)
         else:
             send_telegram(f"📊 扫描完成，本次无GO信号（已扫{len(scan_list)}只）")
+
+        # ── 高分但被硬门否决：单独一条可见性提示 ──────────────
+        # 不影响GO信号判定/自动开仓逻辑，纯粹是把已经算出来但被扫描日志
+        # 吞掉的高分记录露出来，供人工判断要不要手动多看一眼。
+        # 只用"是否真的被推过GO"（go_tickers）判断，不用verdict=="GO"——
+        # 否则cold_decision判GO但被debate否掉（AVOID/WAIT）的票会两边都
+        # 看不到：既不进GO推送，也会被verdict过滤条件挡在这条摘要外面。
+        go_tickers = {s["ticker"] for s in scan_result.get("go_signals", [])}
+        high_score_vetoes = sorted(
+            [r for r in scan_result.get("results", [])
+             if r.get("ticker") not in go_tickers
+             and (r.get("score") or 0) >= HIGH_SCORE_VETO_THRESHOLD],
+            key=lambda r: r.get("score", 0), reverse=True,
+        )
+        if high_score_vetoes:
+            lines = ["👀 <b>高分但被硬门否决</b>（仅供参考，不构成入场建议）"]
+            for r in high_score_vetoes[:5]:
+                lines.append(f"• {r['ticker']} 分{r.get('score')} @ ${r.get('price', 0):.2f} — {r.get('reason','')}")
+            send_telegram("\n".join(lines))
 
     print(f"\n[Scheduler] 扫描周期完成 ✓\n{'='*50}")
     return scan_result
