@@ -51,9 +51,11 @@ def build_dynamic_watchlist(core: list | None = None,
         from .sector_rotation import build_dynamic_watchlist as _sr_build
         result = _sr_build(core=core or [], max_total=max_total)
         sector_names = "、".join(s["name"] for s in result.get("sectors_used", []))
+        movers_n = len(result.get("movers_add", []))
         result["note"] = (
-            f"核心 {len(result['core'])} 只 + "
-            f"板块轮动 {len(result['sector_add'])} 只（{sector_names}）"
+            f"核心 {len(result['core'])} 只"
+            + (f" + 异动 {movers_n} 只" if movers_n else "")
+            + f" + 板块轮动 {len(result['sector_add'])} 只（{sector_names}）"
             f"= 合计 {result['total']} 只"
         )
         return result
