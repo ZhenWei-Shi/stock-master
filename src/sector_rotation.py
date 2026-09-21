@@ -537,12 +537,23 @@ def build_dynamic_watchlist(core: list[str] | None = None,
     core = [t.upper() for t in (core or [])]
     hot  = get_hot_tickers(top_n_sectors=top_n_sectors, per_sector=per_sector)
 
+    # 2026-09-21新增：独立于板块排名的异动股（今天自己涨跌/放量异常），
+    # 堵住"要等所属板块整体排进前3才被扫到"的滞后窗口（详见market_scanner.py
+    # 顶部说明，源起META案例）。市场数据获取失败时静默跳过，不影响原有
+    # 板块轮动逻辑——这是纯增量能力，不该因为它出错就搞垮整个watchlist构建。
+    try:
+        from .market_scanner import find_movers
+        movers = find_movers()
+    except Exception:
+        movers = []
+    movers_add = [m["ticker"] for m in movers if m["ticker"] not in core]
+
     sector_add   = []
     sectors_used = {}
     for item in hot:
         tk  = item["ticker"]
         etf = item["sector_etf"]
-        if tk not in core:
+        if tk not in core and tk not in movers_add:
             sector_add.append(tk)
         if etf not in sectors_used:
             sectors_used[etf] = {
@@ -553,16 +564,20 @@ def build_dynamic_watchlist(core: list[str] | None = None,
                 "accel": item["accel"],
             }
 
-    combined = core + sector_add
+    # 合并优先级：核心自选 > 今日异动股（更紧迫，是刚发生的事）> 板块轮动
+    # 代表股（背景性，不代表这些股票自己今天有什么动静）。
+    combined = core + movers_add + sector_add
     combined = list(dict.fromkeys(combined))  # 保序去重
     combined = combined[:max_total]
 
     return {
-        "tickers":      combined,
-        "core":         core,
-        "sector_add":   sector_add[:max_total - len(core)],
-        "sectors_used": list(sectors_used.values()),
-        "total":        len(combined),
+        "tickers":       combined,
+        "core":          core,
+        "movers_add":    [t for t in movers_add if t in combined],
+        "sector_add":    [t for t in sector_add if t in combined],
+        "sectors_used":  list(sectors_used.values()),
+        "movers_detail": movers,
+        "total":         len(combined),
     }
 
 
