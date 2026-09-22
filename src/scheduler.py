@@ -400,6 +400,23 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                 "trend":  "⚡仅trend一票，可以考虑手动赌一把 ",
                 "volume": "⚡仅volume一票，可以考虑手动赌一把 ",
             }
+            # 大白话版分析模板：把gate自己的note（原始数字/术语）套进一句能直接拿来
+            # 做决策的人话解释，而不是原样甩一句技术note出来。note本身仍然附在句尾，
+            # 供想看原始数字的人核对，不是替换掉它。
+            SOLO_VETO_PLAIN = {
+                "trend": lambda note: (
+                    "大白话：其他检查都过了，就差这一条——它现在比200日均线还低，"
+                    "说明长期趋势还没转头向上。想赌的话赌的是"
+                    "'短线反弹能不能盖过长期趋势的逆风'，不是公司出了什么新问题。"
+                    f"（原始数据：{note}）" if note else ""
+                ),
+                "volume": lambda note: (
+                    "大白话：其他检查都过了，就差这一条——今天的成交量跟价格走势不太"
+                    "匹配（该放量没放量，或者放得不正常）。想赌的话赌的是"
+                    "'这波量能只是暂时没跟上，不是资金已经在偷偷撤'。"
+                    f"（原始数据：{note}）" if note else ""
+                ),
+            }
             lines = ["👀 <b>高分但被硬门否决</b>（仅供参考，不构成入场建议）"]
             for r in high_score_vetoes[:5]:
                 reason = r.get("reason", "")
@@ -408,11 +425,13 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                 sole_gate = non_time_failed[0] if len(non_time_failed) == 1 else None
                 tag = SOLO_VETO_TAGS.get(sole_gate, "") if sole_gate else ""
                 lines.append(f"• {tag}{r['ticker']} 分{r.get('score')} @ ${r.get('price', 0):.2f} — {reason}")
-                # 只差一票时附一句分析（直接复用该gate自己的note，不是另外生成新判断），
-                # 帮用户判断这"一票"具体差在哪个数字上，值不值得手动赌
                 if sole_gate:
                     note = r.get("failed_gate_notes", {}).get(sole_gate, "")
-                    if note:
+                    plain_fn = SOLO_VETO_PLAIN.get(sole_gate)
+                    plain = plain_fn(note) if plain_fn else ""
+                    if plain:
+                        lines.append(f"   {plain}")
+                    elif note:
                         lines.append(f"   分析：{note}")
             send_telegram("\n".join(lines))
 
