@@ -405,8 +405,15 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
                 reason = r.get("reason", "")
                 failed = [g.strip() for g in reason.removeprefix(PREFIX).split(",")]
                 non_time_failed = [g for g in failed if g != "time_window"]
-                tag = SOLO_VETO_TAGS.get(non_time_failed[0], "") if len(non_time_failed) == 1 else ""
+                sole_gate = non_time_failed[0] if len(non_time_failed) == 1 else None
+                tag = SOLO_VETO_TAGS.get(sole_gate, "") if sole_gate else ""
                 lines.append(f"• {tag}{r['ticker']} 分{r.get('score')} @ ${r.get('price', 0):.2f} — {reason}")
+                # 只差一票时附一句分析（直接复用该gate自己的note，不是另外生成新判断），
+                # 帮用户判断这"一票"具体差在哪个数字上，值不值得手动赌
+                if sole_gate:
+                    note = r.get("failed_gate_notes", {}).get(sole_gate, "")
+                    if note:
+                        lines.append(f"   分析：{note}")
             send_telegram("\n".join(lines))
 
     print(f"\n[Scheduler] 扫描周期完成 ✓\n{'='*50}")

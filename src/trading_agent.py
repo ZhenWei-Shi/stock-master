@@ -145,6 +145,13 @@ def run_scan(watchlist: list, account_value: float = 2000,
                 "verdict": cold.get("verdict"),
                 "score":   cold.get("score"),
                 "reason":  cold.get("reason", "")[:80],
+                # 只留未通过/警示门的note，供"高分但被硬门否决"摘要里拼一句分析用，
+                # 不留全部gates字典（会让scan_log.json无谓膨胀）
+                "failed_gate_notes": {
+                    k: v.get("note", "")
+                    for k, v in cold.get("gates", {}).items()
+                    if isinstance(v, dict) and v.get("pass") in (False, "warn")
+                },
             }
 
             # GO 信号进入辩论层
