@@ -73,6 +73,7 @@ import numpy as np
 import pytz
 from datetime import datetime
 from .pdt_guard import check_pdt_risk, will_trigger_pdt
+from .fetcher import daily_history
 
 ET = pytz.timezone("America/New_York")
 
@@ -260,9 +261,9 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     try:
         tk   = yf.Ticker(ticker)
         info = tk.info
-        hist_1y  = tk.history(period="1y",  interval="1d")
+        hist_1y  = daily_history(tk, "1y")
         hist_5d  = tk.history(period="5d",  interval="5m")
-        hist_3mo = tk.history(period="3mo", interval="1d")
+        hist_3mo = daily_history(tk, "3mo")
     except Exception as e:
         return {"verdict": "ABORT", "reason": f"数据获取失败：{e}",
                 "score": 0, "gates": {}, "entry_plan": None}

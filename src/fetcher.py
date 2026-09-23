@@ -2,8 +2,63 @@ import yfinance as yf
 import pandas as pd
 
 
+# Yahoo日线偶尔整天漏聚合（2026-09-22全市场缺失，同日1小时线完整），
+# 只在最近这段窗口内检查缺口，缺了才多发一次小时线请求
+GAP_CHECK_DAYS = 30
+
+
+def fill_daily_gaps(daily: pd.DataFrame, hourly: pd.DataFrame) -> pd.DataFrame:
+    """用小时线聚合补日线缺失的交易日。
+
+    只补"小时线有数据、日线没有"且不早于日线首日的日期；节假日小时线本身
+    为空，不会被误补。补上的日期记在 attrs["filled_dates"]。
+    """
+    if daily.empty or hourly.empty:
+        return daily
+    tz = daily.index.tz
+    have = {ts.date() for ts in daily.index}
+    first = daily.index[0].date()
+    rows = {}
+    for day, g in hourly.groupby(hourly.index.date):
+        if day in have or day < first:
+            continue
+        row = {c: 0.0 for c in daily.columns}   # Dividends/Stock Splits等补0
+        row.update(Open=g["Open"].iloc[0], High=g["High"].max(),
+                   Low=g["Low"].min(), Close=g["Close"].iloc[-1],
+                   Volume=g["Volume"].sum())
+        rows[pd.Timestamp(day).tz_localize(tz)] = row
+    if not rows:
+        return daily
+    filled = pd.DataFrame.from_dict(rows, orient="index")[daily.columns]
+    out = pd.concat([daily, filled]).sort_index()
+    out.attrs["filled_dates"] = sorted(str(d.date()) for d in rows)
+    return out
+
+
+def _has_weekday_gap(daily: pd.DataFrame) -> bool:
+    """最近GAP_CHECK_DAYS天内是否有工作日不在日线里（含节假日，宁可多查）。"""
+    if daily.empty:
+        return False
+    last = daily.index[-1]
+    recent = pd.bdate_range(last - pd.Timedelta(days=GAP_CHECK_DAYS), last).normalize()
+    have = {ts.date() for ts in daily.index}
+    return any(d.date() not in have for d in recent if d >= daily.index[0])
+
+
+def daily_history(tk, period: str = "1y") -> pd.DataFrame:
+    """日线 + 小时线兜底。tk 为 yf.Ticker；兜底失败时原样返回日线。"""
+    daily = tk.history(period=period, interval="1d")
+    if not _has_weekday_gap(daily):
+        return daily
+    try:
+        hourly = tk.history(period="1mo", interval="1h")
+        return fill_daily_gaps(daily, hourly)
+    except Exception:
+        return daily
+
+
 def get_stock_history(ticker: str, period: str = "1y") -> pd.DataFrame:
-    return yf.Ticker(ticker).history(period=period)
+    return daily_history(yf.Ticker(ticker), period)
 
 
 def get_stock_info(ticker: str) -> dict:
