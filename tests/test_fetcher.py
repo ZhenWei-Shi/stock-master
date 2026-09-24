@@ -74,6 +74,16 @@ class TestHasWeekdayGap:
         # 9/18周五 → 9/21周一，中间周末不算缺口
         assert _has_weekday_gap(_daily(["2026-09-17", "2026-09-18", "2026-09-21"])) is False
 
+    def test_nyse_holiday_not_counted_as_gap(self):
+        # 9/7劳动节休市：否则最近30天窗口内每次调用都会误发小时线请求
+        days = [d for d in pd.bdate_range("2026-08-24", "2026-09-23") if str(d.date()) != "2026-09-07"]
+        assert _has_weekday_gap(_daily(days)) is False
+
+    def test_good_friday_not_counted_as_gap(self):
+        # 耶稣受难日NYSE休市但不是联邦假日
+        days = [d for d in pd.bdate_range("2026-03-30", "2026-04-08") if str(d.date()) != "2026-04-03"]
+        assert _has_weekday_gap(_daily(days)) is False
+
     def test_empty(self):
         assert _has_weekday_gap(pd.DataFrame(columns=COLS)) is False
 

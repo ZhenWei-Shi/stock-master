@@ -1,10 +1,28 @@
 import yfinance as yf
 import pandas as pd
+from pandas.tseries.holiday import (
+    AbstractHolidayCalendar, Holiday, nearest_workday, GoodFriday,
+    USMartinLutherKingJr, USPresidentsDay, USMemorialDay, USLaborDay,
+    USThanksgivingDay,
+)
 
 
 # Yahoo日线偶尔整天漏聚合（2026-09-22全市场缺失，同日1小时线完整），
 # 只在最近这段窗口内检查缺口，缺了才多发一次小时线请求
 GAP_CHECK_DAYS = 30
+
+
+class NYSEHolidayCalendar(AbstractHolidayCalendar):
+    """NYSE全天休市日（不含临时休市），用来排除缺口误报。"""
+    rules = [
+        Holiday("NewYearsDay", month=1, day=1, observance=nearest_workday),
+        USMartinLutherKingJr, USPresidentsDay, GoodFriday, USMemorialDay,
+        Holiday("Juneteenth", month=6, day=19, start_date="2022-01-01",
+                observance=nearest_workday),
+        Holiday("IndependenceDay", month=7, day=4, observance=nearest_workday),
+        USLaborDay, USThanksgivingDay,
+        Holiday("Christmas", month=12, day=25, observance=nearest_workday),
+    ]
 
 
 def fill_daily_gaps(daily: pd.DataFrame, hourly: pd.DataFrame) -> pd.DataFrame:
@@ -36,13 +54,18 @@ def fill_daily_gaps(daily: pd.DataFrame, hourly: pd.DataFrame) -> pd.DataFrame:
 
 
 def _has_weekday_gap(daily: pd.DataFrame) -> bool:
-    """最近GAP_CHECK_DAYS天内是否有工作日不在日线里（含节假日，宁可多查）。"""
+    """最近GAP_CHECK_DAYS天内是否有NYSE交易日不在日线里。"""
     if daily.empty:
         return False
     last = daily.index[-1]
-    recent = pd.bdate_range(last - pd.Timedelta(days=GAP_CHECK_DAYS), last).normalize()
+    start = max(last - pd.Timedelta(days=GAP_CHECK_DAYS), daily.index[0])
+    holidays = NYSEHolidayCalendar().holidays(start.tz_localize(None).normalize(),
+                                             last.tz_localize(None).normalize())
+    recent = pd.bdate_range(start.tz_localize(None).normalize(),
+                            last.tz_localize(None).normalize(),
+                            freq="C", holidays=holidays)
     have = {ts.date() for ts in daily.index}
-    return any(d.date() not in have for d in recent if d >= daily.index[0])
+    return any(d.date() not in have for d in recent)
 
 
 def daily_history(tk, period: str = "1y") -> pd.DataFrame:
