@@ -725,9 +725,12 @@ def full_macro_report(watchlist: list = None) -> dict:
 # 6. cold_model 集成接口
 # ─────────────────────────────────────────────────────────────
 
-def macro_gate_check(ticker: str) -> dict:
+def macro_gate_check(ticker: str, direction: str = "LONG") -> dict:
     """
     为单个股票的决策提供宏观层面的加分/扣分/否决。
+
+    direction="SHORT" 时宏观主题的利好/利空对调（主题不利该股→做空加分，
+    主题有利该股→做空扣分）；重大事件日否决和VIX恐慌扣分是风险控制，不分方向。
 
     cold_model 调用此函数，得到：
       block:    True → 宏观环境直接否决（硬性负面新闻/重大事件日）
@@ -770,6 +773,8 @@ def macro_gate_check(ticker: str) -> dict:
             cal_warnings = snap.get("calendar_warnings", [])
             reasons.append("；".join(cal_warnings) if cal_warnings else "今日FOMC/CPI/非农发布，禁止开新仓")
 
+        short = direction == "SHORT"
+
         # 硬性负面新闻
         if ticker in snap.get("tickers_avoid", []):
             # 查看原因
@@ -777,14 +782,22 @@ def macro_gate_check(ticker: str) -> dict:
             for tid, _ in top_themes:
                 chain = _TRANSMISSION_CHAINS.get(tid, {})
                 if ticker in chain.get("tickers_avoid", []):
-                    penalty += 25
-                    reasons.append(f"宏观主题[{chain.get('label',tid)}]不利于{ticker}")
+                    if short:
+                        bonus += 15
+                        reasons.append(f"宏观主题[{chain.get('label',tid)}]不利于{ticker}，顺势做空")
+                    else:
+                        penalty += 25
+                        reasons.append(f"宏观主题[{chain.get('label',tid)}]不利于{ticker}")
                     break
 
         # 受益板块加分
         if ticker in snap.get("tickers_favor", []):
-            bonus += 15
-            reasons.append(f"宏观主题对{ticker}有利")
+            if short:
+                penalty += 25
+                reasons.append(f"宏观主题对{ticker}有利，逆势做空")
+            else:
+                bonus += 15
+                reasons.append(f"宏观主题对{ticker}有利")
 
         # VIX 异常 → 全面减仓
         vix_chg = snap.get("vix_change_pct", 0)

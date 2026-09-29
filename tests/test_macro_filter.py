@@ -85,3 +85,44 @@ class TestMacroGateCheckWording:
         result = mf.macro_gate_check("ASTS")
         assert result["block"] is True
         assert "今日FOMC/CPI/非农发布" in result["reason"]
+
+
+class TestMacroGateCheckDirection:
+    """2026-09-29：SHORT方向下宏观主题的利好/利空对调，VIX扣分不分方向。"""
+
+    def _write_snapshot(self, tmp_path, monkeypatch, extra):
+        monkeypatch.setattr(mf, "_DATA", str(tmp_path))
+        snap = {
+            "generated_at": str(datetime.now(ET)),
+            "top_themes": [],
+            "sector_scores": {},
+            "tickers_avoid": [],
+            "tickers_favor": [],
+            "high_risk_today": False,
+            "vix_change_pct": 0,
+            **extra,
+        }
+        with open(tmp_path / "macro_snapshot.json", "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False)
+
+    def test_favored_ticker_is_bonus_for_long_penalty_for_short(self, tmp_path, monkeypatch):
+        self._write_snapshot(tmp_path, monkeypatch, {"tickers_favor": ["ASTS"]})
+        long_r = mf.macro_gate_check("ASTS")
+        short_r = mf.macro_gate_check("ASTS", "SHORT")
+        assert (long_r["bonus"], long_r["penalty"]) == (15, 0)
+        assert (short_r["bonus"], short_r["penalty"]) == (0, 25)
+
+    def test_avoided_ticker_is_penalty_for_long_bonus_for_short(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mf, "_TRANSMISSION_CHAINS",
+                            {"t1": {"label": "测试主题", "tickers_avoid": ["ASTS"]}})
+        self._write_snapshot(tmp_path, monkeypatch,
+                             {"tickers_avoid": ["ASTS"], "top_themes": [["t1", 1]]})
+        long_r = mf.macro_gate_check("ASTS")
+        short_r = mf.macro_gate_check("ASTS", "SHORT")
+        assert (long_r["bonus"], long_r["penalty"]) == (0, 25)
+        assert (short_r["bonus"], short_r["penalty"]) == (15, 0)
+
+    def test_vix_spike_penalizes_both_directions(self, tmp_path, monkeypatch):
+        self._write_snapshot(tmp_path, monkeypatch, {"vix_change_pct": 20})
+        assert mf.macro_gate_check("ASTS")["penalty"] == 20
+        assert mf.macro_gate_check("ASTS", "SHORT")["penalty"] == 20
