@@ -772,6 +772,17 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[Perf] 周报生成失败：{e}")
 
+    def _event_lab():
+        """15:50 事件实验室（只记录不下单）：刷新财报日历、登记确认的财报、按入场/退出/
+        财报后三个阶段拍CBOE期权快照。CBOE延迟约15分钟，15:50拿到的约是15:35的报价。"""
+        try:
+            from src.event_lab import run_event_lab
+            r = run_event_lab(_latest_watchlist())
+            print(f"[EventLab] 日历刷新{r['calendar_refreshed']}只，新登记{r['registered']}，"
+                  f"快照{r['snapshots']}，累计{r['tracked']}个事件")
+        except Exception as e:
+            print(f"[EventLab] 运行失败：{e}")
+
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
         (9,  45): ("morning_scan",    lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
@@ -782,6 +793,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (14,  0): ("afternoon_13dg",  _afternoon_13dg),
         (14,  5): ("intraday_check_5", _intraday_check),
         (15,  0): ("intraday_check_6", _intraday_check),
+        (15, 50): ("event_lab",       _event_lab),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
         (16, 20): ("failed_breakout_log", _failed_breakout_log),
