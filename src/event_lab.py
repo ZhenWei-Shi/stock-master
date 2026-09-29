@@ -246,8 +246,12 @@ def run_event_lab(watchlist: list | None = None, fetch=None, today: date | None 
                                 "registered": today.isoformat()}
         registered.append(key)
 
+    cancelled = cancel_moved_events(state, today)
+
     done = []
     for key, ev in state["events"].items():
+        if ev.get("cancelled"):
+            continue
         stages = [st for st in ("entry", "exit", "post")
                   if ev.get(st) == today.isoformat() and st not in ev.get("snapshots", {})]
         if not stages:
@@ -264,7 +268,26 @@ def run_event_lab(watchlist: list | None = None, fetch=None, today: date | None 
 
     _save(state)
     return {"ok": True, "calendar_refreshed": refreshed, "registered": registered, "snapshots": done,
-            "tracked": len(state["events"])}
+            "cancelled": cancelled, "tracked": len(state["events"])}
+
+
+def cancel_moved_events(state: dict, today: date) -> list:
+    """
+    公司改了财报日期：日期还没到、日历上的确认日期已变的事件作废（原地修改state）。
+    否则旧事件会在错误的日子继续拍快照，污染H1/H3统计（2026-09-29重启前清查发现）。
+    已经过去、只是漏拍了财报后快照的事件不动——它们的H2隐含幅度仍然有效。
+    """
+    out = []
+    for key, ev in state["events"].items():
+        if ev.get("cancelled") or ev["event_date"] < today.isoformat():
+            continue
+        cal = state.get("calendar", {}).get(ev["ticker"])
+        if not cal or cal.get("timing") == "unconfirmed" or cal["date"] == ev["event_date"]:
+            continue
+        ev["cancelled"] = f"{today}: 财报日期由{ev['event_date']}改为{cal['date']}"
+        ev["results"] = {}
+        out.append(key)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -282,7 +305,7 @@ def _mt(xs):
 
 def summarize(state: dict | None = None) -> str:
     state = state or _load()
-    res = [e.get("results") or {} for e in state["events"].values()]
+    res = [e.get("results") or {} for e in state["events"].values() if not e.get("cancelled")]
     n1, m1, t1 = _mt([r.get("h1_ret") for r in res])
     _, m1m, _ = _mt([r.get("h1_ret_mid") for r in res])
     n3, m3, t3 = _mt([r.get("h3_ret") for r in res])
@@ -303,14 +326,36 @@ def summarize(state: dict | None = None) -> str:
                      f"实际小于隐含的占{over * 100:.0f}%")
     today = datetime.now(ET).date().isoformat()
     upcoming = sorted((e["event_date"], e["ticker"], e["timing"]) for e in state["events"].values()
-                      if e["event_date"] >= today)[:8]
+                      if e["event_date"] >= today and not e.get("cancelled"))[:8]
     if upcoming:
         lines.append("即将到来：" + "，".join(f"{t} {d[5:]} {tm}" for d, t, tm in upcoming))
     return "\n".join(lines)
+
+
+def run_in_subprocess(watchlist: list | None = None, timeout: int = 900) -> str:
+    """
+    供scheduler调用：子进程运行，跑完退出释放内存。2026-09-29服务器实测：刷新105只
+    股票的财报日历让进程内存从173MB涨到337MB，而服务器可用内存约345MB，不能在
+    常驻的scheduler进程里跑（做法同performance_report.run_in_subprocess）。
+    """
+    import subprocess
+    root = os.path.join(os.path.dirname(__file__), "..")
+    args = [sys.executable, "-m", "src.event_lab"]
+    if watchlist:
+        args += ["--watchlist", ",".join(watchlist)]
+    r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=timeout,
+                       env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    if r.returncode != 0:
+        tail = (r.stderr or "").strip().splitlines()
+        raise RuntimeError(tail[-1] if tail else f"exit {r.returncode}")
+    return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
 
 
 if __name__ == "__main__":
     if "--summary" in sys.argv:
         print(summarize())
     else:
-        print(run_event_lab())
+        wl = sys.argv[sys.argv.index("--watchlist") + 1].split(",") if "--watchlist" in sys.argv else None
+        r = run_event_lab(wl)
+        print(f"日历刷新{r['calendar_refreshed']}只，新登记{r['registered']}，快照{r['snapshots']}，"
+              f"作废{r['cancelled']}，累计{r['tracked']}个事件")

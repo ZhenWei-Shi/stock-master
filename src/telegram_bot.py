@@ -572,7 +572,8 @@ def handle_command(text: str):
     elif cmd == "/events":
         # /events —— 事件实验室进度：各假设样本数/结果、即将到来的财报
         from src.event_lab import summarize
-        send(summarize())
+        from src.overnight_lab import summarize as overnight_summary
+        send(summarize() + "\n" + overnight_summary())
 
     elif cmd == "/risk":
         # /risk NVDA —— 风控层检查（九关2026-09-29降级后只保留风控类gate：止损宽度/

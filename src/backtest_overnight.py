@@ -117,7 +117,6 @@ def main():
     prices = load_prices(tickers, 5)
     tickers = [t for t in tickers if t in prices]
     cost = 2 * COST_BPS / 1e4
-    rng = np.random.default_rng(0)
 
     rows = []
     for t in tickers:

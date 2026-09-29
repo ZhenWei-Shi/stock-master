@@ -41,8 +41,8 @@ class TestRankAndPlan:
         ranked = pd.Series([0.9, 0.8, 0.7, 0.6], index=["BIG", "VETO", "A", "B"])
         prices = {"BIG": 1069.0, "VETO": 50.0, "A": 100.0, "B": 200.0}
         plan = mb.plan_rebalance(ranked, prices, held=[], book_value=2000, risk_ok=lambda t: t != "VETO")
-        # 单仓预算=2000×40%=800：BIG买不起，VETO被风控否决
-        assert plan["targets"] == ["A", "B"] and plan["shares"] == {"A": 8, "B": 4}
+        # 单仓预算=2000×39%=780：BIG买不起，VETO被风控否决
+        assert plan["targets"] == ["A", "B"] and plan["shares"] == {"A": 7, "B": 3}
         assert ("BIG", "买不起") in plan["skipped"] and ("VETO", "风控否决") in plan["skipped"]
 
     def test_plan_keeps_holdings_still_in_top(self):
@@ -88,3 +88,12 @@ def test_rebalance_end_to_end_with_mocks(tmp_path, monkeypatch):
     # 非月末且不强制：不动
     monkeypatch.setattr(mb, "is_last_trading_day", lambda d: False)
     assert "skipped" in mb.rebalance()
+
+
+def test_two_positions_at_weight_limit_fit_exposure_cap(tmp_path, monkeypatch):
+    # 两只都刚好用满39%预算，加0.05%滑点后总仓位仍须低于80%上限
+    monkeypatch.setattr(pt, "_MOM", str(tmp_path / "mom.json"))
+    pt.init_account(2000, mode="momentum")
+    for t in ("A", "B"):
+        r = pt.open_position(t, 10, 78.0, stop_loss=62.4, target=7800, strategy="Momentum/Monthly", mode="momentum")
+        assert r["ok"], r
