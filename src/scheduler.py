@@ -51,6 +51,12 @@ DEFAULT_WATCHLIST = [
 
 _CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "scheduler_config.json")
 
+# 2026-09-29：九关降级为风控层（回测证明其信号类gate与随机入场无差别，见wiki
+# stock-master/overview"核心策略诊断"）。False时09:45/15:30扫描只记录scan_log，
+# 不根据GO自动开模拟仓、不推送GO/高分否决提醒；已有持仓仍由monitor_cycle管理止损。
+# 开仓前的风控检查改用 src/risk_layer.py。
+NINE_GATE_AS_SIGNAL = False
+
 # 高分但被硬门否决的可见性阈值（仅推送提示，不触发任何交易/评分逻辑）。
 # 2026-09-21复盘：META当天动态watchlist命中后score达91，但trend死叉一票
 # 否决ABORT，而当时只推送GO信号，这条高分记录被扫描日志吞掉，用户完全没
@@ -318,9 +324,15 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
         watchlist  = scan_list,
         account_value = account,
         direction  = "LONG",
-        auto_paper = True,
+        auto_paper = NINE_GATE_AS_SIGNAL,
         mode       = mode,
     )
+
+    if not NINE_GATE_AS_SIGNAL:
+        n_go = len(scan_result.get("go_signals", []))
+        print(f"\n[3/3] 九关已降级为风控层：本次{n_go}个GO仅记录，不开仓、不推送")
+        print(f"\n[Scheduler] 扫描周期完成（仅记录）✓\n{'='*50}")
+        return scan_result
 
     # ── Step 3：推送 GO 信号 ────────────────────────────
     go_signals = scan_result.get("go_signals", [])

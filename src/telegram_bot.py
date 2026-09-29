@@ -383,6 +383,7 @@ def handle_command(text: str):
             "/logexec NVDA 142.00 143.50  记录信号价→实际成交价（执行追踪）\n"
             "/logskip NVDA              记录跳过（超出限价）\n"
             "/execreport                执行偏差统计报告\n"
+            "/risk NVDA                 风控检查（九关已降级为风控层，不给买卖信号）\n"
             "/perf                      模拟盘绩效（回撤/Sharpe/对比SPY/胜率区间）\n"
             "/status                    运行状态\n"
             "/help                      显示帮助"
@@ -566,6 +567,19 @@ def handle_command(text: str):
         # 信号不分ticker，只读本地快照（由 scheduler 09:00晨报刷新）
         from src.rate_expectations import format_rate_expectation_telegram
         send(format_rate_expectation_telegram())
+
+    elif cmd == "/risk":
+        # /risk NVDA —— 风控层检查（九关2026-09-29降级后只保留风控类gate：止损宽度/
+        # 财报/发债/新闻/PDT/时段/VIX/宏观），不给买卖信号
+        if len(parts) < 2:
+            send("用法：/risk NVDA（只看风控能不能做，不是买卖信号）")
+        else:
+            tk = parts[1].upper()
+
+            def _do_risk():
+                from src.risk_layer import risk_check, format_risk
+                send(format_risk(risk_check(tk)))
+            _timed_thread(_do_risk, 120, send, f"/risk {tk}")
 
     elif cmd == "/perf":
         # /perf —— 模拟盘绩效（资金曲线：回撤/Sharpe/对比SPY + 逐笔胜率区间）。
