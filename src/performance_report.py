@@ -38,9 +38,27 @@ def _day(ts) -> pd.Timestamp:
     return pd.Timestamp(str(ts)[:10])
 
 
+# 2026-09-29：动量账本独立记账后，周报和/perf同时看两个账本
+BOOKS = {
+    "paper": "原模拟盘（九关时代，已停止开新仓）",
+    "momentum": "月度动量账本",
+}
+MIN_DAYS_FOR_RATIOS = 5   # 交易日太少时不算Sharpe/回撤这类比率（quantstats在极短序列上会报错或失真）
+
+
 def load_ledger(path: str = _LOG) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_book(mode: str) -> dict | None:
+    """按账本模式读取；账本还没建（如动量账本首次调仓前）返回None。"""
+    from .paper_trading import _ledger_path
+    path = _ledger_path(mode)
+    if not os.path.exists(path):
+        return None
+    ledger = load_ledger(path)
+    return ledger if (ledger.get("account") or {}).get("initial_value") else None
 
 
 def build_equity_curve(positions: list, init_value: float, closes: dict,
@@ -104,6 +122,10 @@ def curve_metrics(equity: pd.Series, bench: pd.Series) -> dict:
     rets = equity.pct_change().dropna()
     b = pd.Series(bench.values, index=pd.DatetimeIndex(bench.index).tz_localize(None).normalize())
     b = b[~b.index.duplicated()].reindex(equity.index).ffill().pct_change().dropna()
+    if len(rets) < MIN_DAYS_FOR_RATIOS:
+        return {"total_ret": round(float(equity.iloc[-1] / equity.iloc[0] - 1) * 100, 2),
+                "bench_ret": round(float((1 + b).prod() - 1) * 100, 2) if len(b) else 0.0,
+                "days": len(equity), "too_short": True}
     greeks = qs.stats.greeks(rets, b) if len(rets) > 5 else {}
     return {
         "total_ret": round(float(equity.iloc[-1] / equity.iloc[0] - 1) * 100, 2),
@@ -118,7 +140,16 @@ def curve_metrics(equity: pd.Series, bench: pd.Series) -> dict:
     }
 
 
-def build_report(ledger: dict | None = None, fetch=None) -> dict:
+def pool_equal_weight(closes: pd.DataFrame, calendar: pd.DatetimeIndex) -> float:
+    """同池等权持有在calendar期间的累计收益%（纯函数）：每天各股涨跌的平均值连乘。"""
+    cl = closes.copy()
+    cl.index = pd.DatetimeIndex(cl.index).tz_localize(None).normalize()
+    cl = cl[~cl.index.duplicated()].reindex(calendar).ffill()
+    daily = cl.pct_change().mean(axis=1, skipna=True).dropna()
+    return round(float((1 + daily).prod() - 1) * 100, 2)
+
+
+def build_report(ledger: dict | None = None, fetch=None, mode: str = "paper", pool_fetch=None) -> dict:
     ledger = ledger or load_ledger()
     positions = list(ledger["positions"].values()) if isinstance(ledger["positions"], dict) else ledger["positions"]
     acct = ledger["account"]
@@ -135,12 +166,27 @@ def build_report(ledger: dict | None = None, fetch=None) -> dict:
     cal = cal[cal >= start]
     closes = {t: fetch(t) for t in {p["ticker"] for p in positions}}
     equity = build_equity_curve(positions, acct["initial_value"], closes, cal)
-    return {"equity": equity, "metrics": curve_metrics(equity, spy), "trades": trade_summary(positions),
-            "account": acct, "spy": spy}
+    rep = {"equity": equity, "metrics": curve_metrics(equity, spy), "trades": trade_summary(positions),
+           "account": acct, "spy": spy, "mode": mode}
+    if mode == "momentum":
+        # 月度动量登记的评估标准：相对同一股票池等权持有的超额（只和SPY比会被股票池本身的涨跌带偏）
+        if pool_fetch is None:
+            import yfinance as _yf
+            from .momentum_book import universe
+
+            def pool_fetch():
+                return _yf.download(universe(), start=start - pd.Timedelta(days=5), auto_adjust=True,
+                                   progress=False, threads=True)["Close"]
+        try:
+            rep["pool_ret"] = pool_equal_weight(pool_fetch(), cal)
+        except Exception as e:
+            rep["pool_error"] = str(e)[:80]
+    return rep
 
 
-def format_telegram(rep: dict) -> str:
+def format_telegram(rep: dict, header: bool = True) -> str:
     m, t, a = rep["metrics"], rep["trades"], rep["account"]
+    mode = rep.get("mode", "paper")
 
     def line(name, s):
         if not s.get("n"):
@@ -148,23 +194,47 @@ def format_telegram(rep: dict) -> str:
         return (f"  {name}：{s['n']}笔 {s['wins']}胜（胜率95%区间{s['win_ci'][0]}-{s['win_ci'][1]}%）"
                 f"，平均{s['avg_pct']:+.2f}%，合计${s['pnl']:+.0f}")
 
-    lines = [
-        f"📊 <b>模拟盘周报</b>  {datetime.now(ET):%Y-%m-%d}",
+    lines = [f"📊 <b>模拟盘周报</b>  {datetime.now(ET):%Y-%m-%d}"] if header else []
+    lines += [
+        f"<b>{BOOKS.get(mode, mode)}</b>",
         f"账户 ${rep['equity'].iloc[-1]:,.0f}（起始${a['initial_value']:,}，{m['days']}个交易日）",
         f"总收益 {m['total_ret']:+.1f}%  vs 同期SPY {m['bench_ret']:+.1f}%",
-        f"最大回撤 {m['max_dd']:.1f}%  Sharpe {m['sharpe']}  Sortino {m['sortino']}  年化波动 {m['volatility']}%"
-        + (f"  beta {m['beta']}" if m.get("beta") is not None else ""),
-        "",
-        "<b>逐笔</b>",
-        line("全部", t["all"]),
-        line(f"时间止损制度({TIME_STOP_SINCE}起)", t["time_stop_regime"]),
     ]
+    if "pool_ret" in rep:
+        lines.append(f"同池等权 {rep['pool_ret']:+.1f}%  → 超额 {m['total_ret'] - rep['pool_ret']:+.1f}%（登记的评估标准）")
+    elif "pool_error" in rep:
+        lines.append(f"同池等权基准取数失败：{rep['pool_error']}")
+    if m.get("too_short"):
+        lines.append(f"（不足{MIN_DAYS_FOR_RATIOS}个交易日，暂不计算回撤/Sharpe）")
+    else:
+        lines.append(f"最大回撤 {m['max_dd']:.1f}%  Sharpe {m['sharpe']}  Sortino {m['sortino']}  年化波动 {m['volatility']}%"
+                     + (f"  beta {m['beta']}" if m.get("beta") is not None else ""))
+    lines += ["", "<b>逐笔</b>", line("全部", t["all"])]
+    if mode == "paper":
+        lines.append(line(f"时间止损制度({TIME_STOP_SINCE}起)", t["time_stop_regime"]))
     for reason, s in t["by_reason"].items():
         lines.append(line(f"出场:{reason}", s))
     if t["open"]:
         lines.append(f"  持仓中：{', '.join(t['open'])}")
-    lines.append("\n（资金曲线按每日收盘价还原；样本很少时各项比率参考意义有限）")
     return "\n".join(lines)
+
+
+def format_all(books: dict | None = None) -> str:
+    """周报/perf：所有账本拼成一条消息；单个账本出错或未开始不影响其他账本（books可注入供测试）。"""
+    parts = [f"📊 <b>模拟盘周报</b>  {datetime.now(ET):%Y-%m-%d}"]
+    for mode, name in BOOKS.items():
+        try:
+            if books is not None:
+                rep = books.get(mode)
+            else:
+                ledger = load_book(mode)
+                rep = build_report(ledger, mode=mode) if ledger else None
+            parts.append(format_telegram(rep, header=False) if rep
+                         else f"<b>{name}</b>\n尚未开始（动量账本在每月最后一个交易日15:40首次调仓时建立）")
+        except Exception as e:
+            parts.append(f"<b>{name}</b>\n报告生成失败：{str(e)[:120]}")
+    parts.append("（资金曲线按每日收盘价还原；样本很少时各项比率参考意义有限）")
+    return "\n\n".join(parts)
 
 
 def run_in_subprocess(timeout: int = 300) -> str:
@@ -181,14 +251,23 @@ def run_in_subprocess(timeout: int = 300) -> str:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="模拟盘绩效报告（quantstats）")
     ap.add_argument("--html", default=None, help="生成quantstats完整网页报告到该路径")
+    ap.add_argument("--mode", default=None, choices=list(BOOKS), help="只看一个账本；默认两个账本都输出")
     a = ap.parse_args()
-    rep = build_report()
+    if not a.html and not a.mode:
+        print(format_all())
+        sys.exit(0)
+    mode = a.mode or "paper"
+    ledger = load_book(mode)
+    if not ledger:
+        print(f"{BOOKS[mode]}尚未开始")
+        sys.exit(0)
+    rep = build_report(ledger, mode=mode)
     if a.html:
         import quantstats as qs
         spy = rep["spy"]
         b = pd.Series(spy.values, index=pd.DatetimeIndex(spy.index).tz_localize(None).normalize())
         qs.reports.html(rep["equity"].pct_change().dropna(), benchmark=b.pct_change().dropna(),
-                        output=a.html, title="stock-master 模拟盘")
+                        output=a.html, title=f"stock-master {BOOKS[mode]}")
         print(f"已生成 {a.html}")
     else:
         print(format_telegram(rep))
