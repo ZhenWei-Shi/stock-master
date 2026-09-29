@@ -4,6 +4,7 @@ numpy>=1.24.0
 requests>=2.31.0
 feedparser>=6.0
 pytz>=2024.1
+alpaca-py>=0.40        # 备用SIP日线+期权模拟账户，未配置密钥时不加载
 quantstats>=0.0.62   # 模拟盘周报与/perf，子进程运行（import约160MB）
 
 # ── 高星 GitHub 项目集成 ─────────────────────────────────────
