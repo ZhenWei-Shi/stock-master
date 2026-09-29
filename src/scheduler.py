@@ -307,7 +307,7 @@ def full_scan_cycle(watchlist: list, account: float, mode: str = "paper",
     if blocked:
         blocked_names = [b["ticker"] for b in blocked]
         print(f"  ❌ 封锁：{blocked_names}（重大负面新闻）")
-        if use_telegram:
+        if use_telegram and NINE_GATE_AS_SIGNAL:   # 九关降级后扫描只记录，不再推送
             send_telegram(
                 f"⚠️ 新闻过滤\n"
                 f"以下股票因负面新闻跳过：{', '.join(blocked_names)}"
@@ -490,6 +490,16 @@ def report_cycle(mode: str = "paper", use_telegram: bool = True):
 # ─────────────────────────────────────────────────────────────
 # 调度器主循环（轻量级，无需 APScheduler）
 # ─────────────────────────────────────────────────────────────
+
+CATCHUP_MINUTES = 15   # 任务计划时间后这么多分钟内仍可补跑（超过就当天放弃，避免重启时补跑早盘任务）
+
+
+def is_due(now: datetime, h: int, m: int, catchup: int = CATCHUP_MINUTES) -> bool:
+    """now是否落在计划时间(h:m)起catchup分钟的窗口内（纯函数）。"""
+    minutes = now.hour * 60 + now.minute
+    start = h * 60 + m
+    return start <= minutes < start + catchup
+
 
 def is_market_day() -> bool:
     """简单判断：周一至周五（不含节假日，节假日影响较小可接受）。"""
@@ -793,14 +803,23 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
 
     def _event_lab():
         """15:50 事件实验室（只记录不下单）：刷新财报日历、登记确认的财报、按入场/退出/
-        财报后三个阶段拍CBOE期权快照。CBOE延迟约15分钟，15:50拿到的约是15:35的报价。"""
+        财报后三个阶段拍CBOE期权快照。CBOE延迟约15分钟，15:50拿到的约是15:35的报价。
+        子进程运行：刷新日历时内存会涨约160MB，不能留在常驻进程里。"""
         try:
-            from src.event_lab import run_event_lab
-            r = run_event_lab(_latest_watchlist())
-            print(f"[EventLab] 日历刷新{r['calendar_refreshed']}只，新登记{r['registered']}，"
-                  f"快照{r['snapshots']}，累计{r['tracked']}个事件")
+            from src.event_lab import run_in_subprocess
+            print(f"[EventLab] {run_in_subprocess(_latest_watchlist())}")
         except Exception as e:
             print(f"[EventLab] 运行失败：{e}")
+
+    def _overnight_lab():
+        """15:45 H4隔夜放量前向登记（只记录不下单）：先给昨天的记录填今天开盘价，再记今天的信号和对照。"""
+        try:
+            from src.overnight_lab import run_overnight_lab
+            r = run_overnight_lab(_latest_watchlist())
+            print(f"[Overnight] 填开盘价{r['filled']}笔，今日信号{r['new']}，对照{r.get('controls', [])}"
+                  + (f"（{r['note']}）" if r.get("note") else ""))
+        except Exception as e:
+            print(f"[Overnight] 运行失败：{e}")
 
     def _momentum_rebalance():
         """15:40 月度动量换仓（只在每月最后一个交易日执行，其他日子直接跳过）。"""
@@ -828,6 +847,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (14,  5): ("intraday_check_5", _intraday_check),
         (15,  0): ("intraday_check_6", _intraday_check),
         (15, 40): ("momentum_rebalance", _momentum_rebalance),
+        (15, 45): ("overnight_lab",   _overnight_lab),
         (15, 50): ("event_lab",       _event_lab),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
@@ -850,7 +870,9 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             f"🤖 <b>TradingAgent 启动</b>\n"
             f"账户：${account:,.0f} | 模式：{mode}\n"
             f"监控股票：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n"
-            f"计划：09:45 / 10:00-15:00每小时监控 / 15:30 / 16:05 ET"
+            f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / 15:30扫描（只记录）/ "
+            f"15:40月度动量（月末）/ 15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / "
+            f"16:20假突破记录 / 周五16:30周报"
         )
 
     print(f"[Scheduler] Agent 启动，按 Ctrl+C 停止")
@@ -864,17 +886,25 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             date_str = now.strftime("%Y-%m-%d")
 
             if is_market_day():
-                for (h, m), (label, func) in SCHEDULE.items():
+                # 2026-09-29：原来要求分钟完全对上（hhmm == (h, m)），前一个任务跑过了
+                # 下一个任务的那一分钟，下一个就会被整次跳过（15:30扫描/15:40动量/
+                # 15:50事件实验室挤在20分钟里）。改为按时间顺序、计划时间后
+                # CATCHUP_MINUTES内都可补跑，每个任务执行前重新取当前时间。
+                for (h, m), (label, func) in sorted(SCHEDULE.items()):
                     key = f"{date_str}_{label}"
-                    if hhmm == (h, m) and key not in executed_today:
-                        executed_today.add(key)
-                        print(f"\n[Scheduler] 执行：{label} @ {now.strftime('%H:%M ET')}")
-                        try:
-                            func()
-                        except Exception as e:
-                            print(f"[Scheduler] {label} 执行出错：{e}")
-                            if use_telegram:
-                                send_telegram(f"❌ Agent错误：{label}\n{str(e)[:200]}")
+                    now = datetime.now(ET)
+                    if key in executed_today or not is_due(now, h, m):
+                        continue
+                    executed_today.add(key)
+                    late = (now.hour, now.minute) != (h, m)
+                    print(f"\n[Scheduler] 执行：{label} @ {now.strftime('%H:%M ET')}"
+                          + (f"（计划{h:02d}:{m:02d}，补跑）" if late else ""))
+                    try:
+                        func()
+                    except Exception as e:
+                        print(f"[Scheduler] {label} 执行出错：{e}")
+                        if use_telegram:
+                            send_telegram(f"❌ Agent错误：{label}\n{str(e)[:200]}")
 
             # 每天午夜清空已执行记录
             if hhmm == (0, 1):

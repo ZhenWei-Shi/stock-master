@@ -61,3 +61,10 @@ def test_scheduler_scan_does_not_trade_or_push(monkeypatch):
     monkeypatch.setattr("src.paper_trading.list_positions", lambda mode: {"account": {}})
     sch.full_scan_cycle(["NVDA"], 1600, use_telegram=True)
     assert calls["auto_paper"] is False and sent == []
+
+
+class TestIsDue:
+    def test_catchup_window(self):
+        from datetime import datetime
+        f = lambda hh, mm: sch.is_due(datetime(2026, 9, 29, hh, mm), 15, 40)
+        assert not f(15, 39) and f(15, 40) and f(15, 54) and not f(15, 55)

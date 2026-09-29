@@ -111,3 +111,45 @@ class TestDailyRun:
         ev = el._load()["events"]["ASTS_2026-09-30"]
         assert "post" in ev["snapshots"] and ev["results"]["h3_ret"] is not None
         assert "事件实验室" in el.summarize()
+
+
+class TestCancelMoved:
+    def _state(self, cal_date, timing="AMC"):
+        return {"calendar": {"MU": {"date": cal_date, "timing": timing, "ts": ""}},
+                "events": {"MU_2026-10-08": {"ticker": "MU", "event_date": "2026-10-08",
+                                              "snapshots": {"entry": {}}, "results": {"h1_ret": 0.1}}}}
+
+    def test_future_event_with_new_date_is_cancelled(self):
+        st = self._state("2026-10-15")
+        assert el.cancel_moved_events(st, date(2026, 10, 1)) == ["MU_2026-10-08"]
+        ev = st["events"]["MU_2026-10-08"]
+        assert "2026-10-15" in ev["cancelled"] and ev["results"] == {}
+
+    def test_same_date_or_unconfirmed_untouched(self):
+        assert el.cancel_moved_events(self._state("2026-10-08"), date(2026, 10, 1)) == []
+        assert el.cancel_moved_events(self._state("2026-10-15", "unconfirmed"), date(2026, 10, 1)) == []
+
+    def test_past_event_kept_even_if_calendar_moved_on(self):
+        # 事件已过（下季度日期出现在日历里），保留其部分结果
+        assert el.cancel_moved_events(self._state("2027-01-10"), date(2026, 10, 20)) == []
+
+    def test_cancelled_excluded_from_summary(self):
+        st = self._state("2026-10-15")
+        el.cancel_moved_events(st, date(2026, 10, 1))
+        assert "H1 财报前买跨式：0笔" in el.summarize(st)
+
+
+def test_run_in_subprocess_builds_command(monkeypatch):
+    import subprocess
+    seen = {}
+
+    class R:
+        returncode, stdout, stderr = 0, "noise\n日历刷新0只，新登记[]", ""
+
+    def fake_run(args, **kw):
+        seen["args"] = args
+        return R()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = el.run_in_subprocess(["ASTS", "MU"])
+    assert seen["args"][1:] == ["-m", "src.event_lab", "--watchlist", "ASTS,MU"]
+    assert out.startswith("日历刷新")
