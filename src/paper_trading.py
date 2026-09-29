@@ -28,6 +28,21 @@ ET      = pytz.timezone("America/New_York")
 _DATA   = os.path.join(os.path.dirname(__file__), "..", "data")
 _LOG    = os.path.join(_DATA, "paper_trades.json")
 _REAL   = os.path.join(_DATA, "real_trades.json")
+_MOM    = os.path.join(_DATA, "momentum_trades.json")   # 2026-09-29：月度动量独立账本
+
+_LEDGERS = {"paper": "_LOG", "real": "_REAL", "momentum": "_MOM"}
+
+
+def _ledger_path(mode: str) -> str:
+    """模式→账本文件。原写法"不是paper就当real"，多一种模式就会误写实盘记录，改为显式映射。
+    按名字取模块变量，保证测试里monkeypatch的路径生效。"""
+    if mode not in _LEDGERS:
+        raise ValueError(f"未知账本模式：{mode}（可选：{', '.join(_LEDGERS)}）")
+    return globals()[_LEDGERS[mode]]
+
+
+# 不受MAX_HOLD_CALENDAR_DAYS时间止损约束的策略（按strategy前缀匹配）
+NO_TIME_STOP_STRATEGIES = ("Momentum/",)
 _PT_LOCK = threading.Lock()  # 防止并发读写持仓文件
 
 os.makedirs(_DATA, exist_ok=True)
@@ -109,7 +124,7 @@ def init_account(account_value: float, mode: str = "paper",
     参数：
       mode — "paper"（模拟盘）或 "real"（真实盘记录）
     """
-    path = _LOG if mode == "paper" else _REAL
+    path = _ledger_path(mode)
     data = _load(path)
     data["account"] = {
         "initial_value": account_value,
@@ -150,7 +165,7 @@ def open_position(ticker: str, shares: int, entry_price: float,
         return {"ok": False, "error": f"手数无效：{shares}"}
     slippage_pct = max(0.0, min(MAX_SLIPPAGE_PCT, slippage_pct))
 
-    path = _LOG if mode == "paper" else _REAL
+    path = _ledger_path(mode)
     cold_result   = kwargs.get("cold_result")
     debate_result = kwargs.get("debate_result")
 
@@ -263,7 +278,7 @@ def close_position(trade_id: str, exit_price: float,
                     mode: str = "paper",
                     slippage_pct: float = 0.05) -> dict:
     """平仓并记录 P&L，更新熔断器状态。"""
-    path = _LOG if mode == "paper" else _REAL
+    path = _ledger_path(mode)
 
     # 先在锁外读一次持仓，确认存在后再抓网络价格（避免持锁期间网络阻塞）
     with _PT_LOCK:
@@ -389,7 +404,7 @@ def update_trailing_stop(trade_id: str, current_price: float,
     止损只升不降——一旦上移就不会因为回调而下移。
     """
     trail_pct = max(TRAIL_STOP_MIN, min(TRAIL_STOP_MAX, trail_pct))
-    path = _LOG if mode == "paper" else _REAL
+    path = _ledger_path(mode)
     with _PT_LOCK:
         data = _load(path)
         pos  = data.get("positions", {}).get(trade_id)
@@ -442,6 +457,8 @@ def _check_position_alert(cur_price: float, pos: dict, now: datetime):
         return (f"✅ 达到目标价 ${pos['target']:.2f}！可考虑减仓", "target")
 
     opened_at = pos.get("opened_at")
+    if str(pos.get("strategy", "")).startswith(NO_TIME_STOP_STRATEGIES):
+        opened_at = None   # 月度动量等长周期策略：只看价格止损，不做10天时间止损
     if opened_at:
         try:
             opened = datetime.fromisoformat(str(opened_at))
@@ -459,7 +476,7 @@ def _check_position_alert(cur_price: float, pos: dict, now: datetime):
 
 def mark_to_market(mode: str = "paper") -> dict:
     """获取所有持仓的当前市值，更新账户总值。"""
-    path = _LOG if mode == "paper" else _REAL
+    path = _ledger_path(mode)
     data = _load(path)
     positions = data.get("positions", {})
     open_pos  = {k: v for k, v in positions.items() if v.get("status") == "open"}
@@ -548,7 +565,7 @@ def performance_report(mode: str = "paper") -> dict:
       Max DD  < 10%  良好；< 5%  顶尖
       Kelly   用实际胜率计算最优仓位比例
     """
-    path  = _LOG if mode == "paper" else _REAL
+    path  = _ledger_path(mode)
     data  = _load(path)
     acct  = data.get("account", {})
     trades = [t for t in data.get("trades", []) if t.get("event") == "close"]
@@ -714,7 +731,7 @@ def compare_paper_vs_real() -> dict:
 def reset_circuit_breaker(mode: str = "paper", confirm: bool = False) -> dict:
     if not confirm:
         return {"ok": False, "error": "需要 confirm=True 才能重置熔断器。请先复盘亏损原因再解除。"}
-    path = _LOG if mode == "paper" else _REAL
+    path = _ledger_path(mode)
     with _PT_LOCK:
         data = _load(path)
         cb   = data.get("account", {}).get("circuit_breaker", {})
@@ -730,7 +747,7 @@ def reset_circuit_breaker(mode: str = "paper", confirm: bool = False) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 def list_positions(mode: str = "paper") -> dict:
-    path = _LOG if mode == "paper" else _REAL
+    path = _ledger_path(mode)
     data = _load(path)
     pos  = data.get("positions", {})
     return {
