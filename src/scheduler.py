@@ -759,6 +759,19 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[FailedBreakout] 记录失败：{e}")
 
+    def _weekly_performance():
+        """周五16:30 模拟盘周报（quantstats资金曲线指标）。子进程运行，避免约160MB常驻内存。"""
+        if datetime.now(ET).weekday() != 4:
+            return
+        try:
+            from src.performance_report import run_in_subprocess
+            msg = run_in_subprocess()
+            print("[Perf] 周报已生成")
+            if use_telegram:
+                send_telegram(msg)
+        except Exception as e:
+            print(f"[Perf] 周报生成失败：{e}")
+
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
         (9,  45): ("morning_scan",    lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
@@ -772,6 +785,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
         (16, 20): ("failed_breakout_log", _failed_breakout_log),
+        (16, 30): ("weekly_performance", _weekly_performance),
     }
 
     executed_today = set()

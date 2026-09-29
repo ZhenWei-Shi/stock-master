@@ -383,6 +383,7 @@ def handle_command(text: str):
             "/logexec NVDA 142.00 143.50  记录信号价→实际成交价（执行追踪）\n"
             "/logskip NVDA              记录跳过（超出限价）\n"
             "/execreport                执行偏差统计报告\n"
+            "/perf                      模拟盘绩效（回撤/Sharpe/对比SPY/胜率区间）\n"
             "/status                    运行状态\n"
             "/help                      显示帮助"
         )
@@ -565,6 +566,16 @@ def handle_command(text: str):
         # 信号不分ticker，只读本地快照（由 scheduler 09:00晨报刷新）
         from src.rate_expectations import format_rate_expectation_telegram
         send(format_rate_expectation_telegram())
+
+    elif cmd == "/perf":
+        # /perf —— 模拟盘绩效（资金曲线：回撤/Sharpe/对比SPY + 逐笔胜率区间）。
+        # quantstats较重，子进程生成，不常驻bot内存
+        send("📊 正在生成模拟盘绩效报告（约30秒）...")
+
+        def _do_perf():
+            from src.performance_report import run_in_subprocess
+            send(run_in_subprocess())
+        _timed_thread(_do_perf, 300, send, "/perf 绩效报告")
 
     elif cmd == "/longhold":
         # /longhold 或 /longhold NVDA AAPL MSFT
