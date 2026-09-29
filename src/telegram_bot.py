@@ -231,103 +231,6 @@ def format_classification(r: dict) -> str:
     return "\n".join(lines)
 
 
-def format_check_telegram(ticker: str) -> str:
-    """单只股票综合诊断：短线九关 + GEX期权结构 + 长期持仓质量，大白话解读。"""
-    from src.cold_model import cold_decision
-    from src.gex_scanner import calc_gex
-    from src.long_hold import long_hold_eval
-
-    account = float(os.getenv("AGENT_ACCOUNT", "2000"))
-    cd  = cold_decision(ticker, portfolio=account, aggressive_mode=True)
-    gex = calc_gex(ticker)
-    lh  = long_hold_eval(ticker)
-
-    today = datetime.now(ET).strftime("%Y-%m-%d")
-    lines = [f"🔍 <b>{ticker} 个股诊断</b>  {today}", ""]
-
-    # ── 短线技术面（九关） ──
-    verdict = cd.get("verdict", "ABORT")
-    score   = cd.get("score", 0)
-    v_icon  = {"GO": "🟢", "WAIT": "🟡", "ABORT": "🔴"}.get(verdict, "🔴")
-    lines.append(f"{v_icon} <b>【短线技术面】</b>{verdict}（九关得分 {score}/100）")
-    if cd.get("reason"):
-        lines.append(f"  <i>（大白话：{cd['reason']}）</i>")
-    lines.append("")
-
-    # ── 期权结构（GEX） ──
-    if gex.get("error"):
-        lines.append(f"⚪ <b>【期权结构】</b>{gex['error']}")
-    else:
-        env_icon = "🟢" if gex["gex_env"] == "正伽马" else "🔴"
-        env_hint = (
-            "机构对冲会压制波动，股价短期内不容易大起大落"
-            if gex["gex_env"] == "正伽马"
-            else "机构对冲会放大波动，容易出现大涨大跌"
-        )
-        lines.append(
-            f"{env_icon} <b>【期权结构】</b>{gex['gex_env']}"
-            f"（净{gex['total_gex_m']:+.0f}M），GEX King ${gex['gex_king']}"
-        )
-        lines.append(f"  <i>（大白话：{env_hint}）</i>")
-    lines.append("")
-
-    # ── 空头成交量（FINRA官方T+1数据，仅供参考不参与打分）──
-    from src.short_volume_monitor import check_ticker_short_volume
-    sv = check_ticker_short_volume(ticker)
-    sv_icon = {
-        "insufficient":  "⚪",
-        "normal":        "🟢",
-        "elevated_high": "🟡",
-        "elevated_low":  "🟡",
-        "extreme_high":  "🔴",
-        "extreme_low":   "🔴",
-    }.get(sv.get("flag"), "⚪")
-    lines.append(f"{sv_icon} <b>【空头成交量】</b>{sv['note']}")
-    if sv.get("flag") not in (None, "insufficient"):
-        lines.append(
-            "  <i>（大白话：这个比例含做市商合规对冲盘，不等于看空押注，"
-            "只有明显偏离自身历史习惯时才值得多留意）</i>"
-        )
-    lines.append("")
-
-    # ── 长期质量 ──
-    if lh.get("error"):
-        lines.append(f"⚪ <b>【长期质量】</b>{lh['error']}")
-    else:
-        lh_verdict = lh["verdict"]
-        lh_icon = {"HOLD": "🟢", "WATCH": "🟡", "SKIP": "🔴"}.get(lh_verdict, "🔴")
-        lh_hint = {
-            "HOLD":  "基本面适合长期持有",
-            "WATCH": "基本面尚可，但还不够扎实，可再观察",
-            "SKIP":  "基本面存在明显问题，不适合长期持有",
-        }[lh_verdict]
-        lines.append(f"{lh_icon} <b>【长期质量】</b>{lh_verdict}（{lh['score']}/100）")
-        lines.append(f"  <i>（大白话：{lh_hint}）</i>")
-    lines.append("")
-
-    # ── 总结 ──
-    lines.append("─────────────────────────")
-    summary = []
-    summary.append({
-        "GO": "短线可考虑介入",
-        "WAIT": "短线建议再等等",
-        "ABORT": "短线暂不建议",
-    }.get(verdict, "短线数据不足"))
-    if not lh.get("error"):
-        summary.append({
-            "HOLD": "长期也具备持有价值",
-            "WATCH": "长期可继续观察",
-            "SKIP": "长期基本面偏弱",
-        }[lh["verdict"]])
-    lines.append("📝 <b>总结</b>：" + "，".join(summary))
-
-    return "\n".join(lines)
-
-
-# ─────────────────────────────────────────────────────────────
-# 自选股文件读写
-# ─────────────────────────────────────────────────────────────
-
 def read_watchlist() -> list:
     with _wl_lock:
         if not os.path.exists(WATCHLIST_FILE):
@@ -355,6 +258,12 @@ def write_watchlist(tickers: list):
 # 指令处理
 # ─────────────────────────────────────────────────────────────
 
+# 2026-09-29精简：九关降级后不再使用的（/scan /hotlist /check /longhold /logexec /logskip
+# /execreport），以及很少用的查询（/sector /oi /uoalist /shortvol /fedwatch /insider /13dg）
+RETIRED_COMMANDS = {"/scan", "/sector", "/hotlist", "/oi", "/uoalist", "/shortvol", "/fedwatch",
+                    "/longhold", "/check", "/insider", "/13dg", "/logexec", "/logskip", "/execreport"}
+
+
 def handle_command(text: str):
     text = text.strip()
     parts = text.split()
@@ -362,32 +271,20 @@ def handle_command(text: str):
 
     if cmd == "/help" or cmd == "/start":
         send(
-            "📋 <b>TradingAgent 指令</b>\n\n"
-            "/add NVDA AAPL    添加股票\n"
-            "/remove NVDA      删除股票\n"
-            "/list             查看自选股\n"
-            "/scan             立即扫描（含板块轮动扩充）\n"
-            "/sector           板块轮动排名（强制刷新）\n"
-            "/hotlist          查看当日动态扫描列表\n"
-            "/gex [NVDA TSLA]           GEX伽马敞口快照（默认大盘SPX/SPY/QQQ）\n"
-            "/oi NVDA [到期日]          单标的持仓量(OI)排行（不填到期日默认合并本月所有未到期到期日）\n"
-            "/uoa NVDA                  检测异常大单+加入自动监控（每小时自动推送新增/升级警报）\n"
-            "/uoa NVDA off               停止监控该股票\n"
-            "/uoalist                   查看当前UOA自动监控列表\n"
-            "/shortvol NVDA             空头成交量参考（FINRA官方T+1数据，仅供参考不参与打分）\n"
-            "/fedwatch                  美联储加息/降息隐含概率（Fed Funds期货推算，仅供参考不参与打分）\n"
-            "/longhold NVDA AAPL        长期持仓质量评估（1年以上视角）\n"
-            "/check NVDA                个股综合诊断（短线+期权+长期，大白话解读）\n"
-            "/insider NVDA AMD          SEC Form 4 内部人买卖记录（近90天）\n"
-            "/13dg                      SEC 13D/G机构大仓新申报（近3天）\n"
-            "/logexec NVDA 142.00 143.50  记录信号价→实际成交价（执行追踪）\n"
-            "/logskip NVDA              记录跳过（超出限价）\n"
-            "/execreport                执行偏差统计报告\n"
-            "/events                    事件实验室进度（财报期权假设的样本与结果）\n"
-            "/risk NVDA                 风控检查（九关已降级为风控层，不给买卖信号）\n"
-            "/perf                      模拟盘绩效（回撤/Sharpe/对比SPY/胜率区间）\n"
-            "/status                    运行状态\n"
-            "/help                      显示帮助"
+            "📋 <b>TradingAgent 指令</b>（2026-09-29精简）\n\n"
+            "<b>自选股</b>\n"
+            "/list            查看自选股\n"
+            "/add NVDA AAPL   添加\n"
+            "/remove NVDA     删除\n\n"
+            "<b>策略</b>\n"
+            "/events          事件实验室+隔夜放量的进度\n"
+            "/perf            模拟盘绩效（回撤/Sharpe/对比SPY）\n"
+            "/risk NVDA       风控检查（不是买卖信号）\n\n"
+            "<b>期权</b>\n"
+            "/gex [NVDA]      伽马敞口（默认SPX/SPY/QQQ）\n"
+            "/uoa NVDA        异常大单检测+加入每小时监控\n"
+            "/uoa NVDA off    停止监控　/uoa 查看监控列表\n\n"
+            "/status          运行状态"
         )
 
     elif cmd == "/list":
@@ -438,54 +335,6 @@ def handle_command(text: str):
         else:
             send(f"未找到：{', '.join(del_tickers)}")
 
-    elif cmd == "/scan":
-        try:
-            from src.scheduler import full_scan_cycle
-            wl = read_watchlist()
-            account = float(os.getenv("AGENT_ACCOUNT", "2000"))
-            if not wl:
-                send("⚠️ 自选股为空，将使用板块轮动热股扫描（约2-3分钟）...")
-            else:
-                send(f"⏳ 开始扫描（自选 {len(wl)} 只 + 板块热股，合并后最多20只），请稍候（约1-3分钟）...")
-            _timed_thread(
-                lambda: full_scan_cycle(wl, account, "paper", True),
-                timeout=480, send_fn=send, label="/scan"
-            )
-        except Exception as e:
-            send(f"扫描启动失败：{e}")
-
-    elif cmd == "/sector":
-        send("⏳ 正在拉取板块轮动数据（强制刷新）...")
-        def _do_sector():
-            try:
-                from src.sector_rotation import fetch_sector_rankings, format_telegram_report
-                fetch_sector_rankings(force=True)
-                send(format_telegram_report())
-            except Exception as e:
-                send(f"板块轮动获取失败：{e}")
-        _timed_thread(_do_sector, timeout=90, send_fn=send, label="/sector")
-
-    elif cmd == "/hotlist":
-        send("⏳ 正在构建动态扫描列表（如缓存过期需约30秒）...")
-        def _do_hotlist():
-            try:
-                from src.trading_agent import build_dynamic_watchlist
-                wl  = read_watchlist()
-                dyn = build_dynamic_watchlist(core=wl, max_total=20)
-                lines = [f"📋 <b>今日动态扫描列表（{dyn['total']}只）</b>\n"]
-                if dyn["core"]:
-                    lines.append(f"📌 <b>固定自选</b>：{', '.join(dyn['core'])}")
-                if dyn["sector_add"]:
-                    lines.append(f"\n⚡ <b>板块轮动追加</b>：{', '.join(dyn['sector_add'])}")
-                for s in dyn.get("sectors_used", []):
-                    accel = "↑加速" if s["accel"] else ""
-                    lines.append(f"  [{s['rank']}] {s['name']}（{s['etf']}）{s['heat']:+.1f}% {accel}")
-                lines.append(f"\n💡 {dyn.get('note','')}")
-                send("\n".join(lines))
-            except Exception as e:
-                send(f"动态列表构建失败：{e}")
-        _timed_thread(_do_hotlist, timeout=120, send_fn=send, label="/hotlist")
-
     elif cmd == "/gex":
         # /gex（默认大盘SPX/SPY/QQQ）或 /gex NVDA TSLA AMD（查任意个股，"^SPX"等指数代码也支持）
         custom = [p.upper() for p in parts[1:] if p.lstrip("^").isalpha()]
@@ -501,31 +350,19 @@ def handle_command(text: str):
                 send(f"GEX 计算失败：{e}")
         _timed_thread(_do_gex, timeout=150, send_fn=send, label="/gex")
 
-    elif cmd == "/oi":
-        # /oi NVDA（默认合并本月所有未到期到期日）或 /oi NVDA 2026-08-21（指定单一到期日）
-        args = parts[1:]
-        if not args or not args[0].lstrip("^").isalpha():
-            send("用法：/oi NVDA　或　/oi NVDA 2026-08-21（不填到期日默认合并本月所有未到期到期日）")
-            return
-        oi_ticker = args[0].upper()
-        oi_expiry = args[1] if len(args) > 1 else None
-        send(f"⏳ 正在拉取 {oi_ticker} 持仓量排行（约20-40秒）...")
-        def _do_oi():
-            try:
-                from src.gex_scanner import top_open_interest, format_top_oi_telegram
-                result = top_open_interest(oi_ticker, expiry=oi_expiry)
-                send(format_top_oi_telegram(result))
-            except Exception as e:
-                send(f"OI排行计算失败：{e}")
-        _timed_thread(_do_oi, timeout=120, send_fn=send, label="/oi")
-
     elif cmd == "/uoa":
         # /uoa NVDA —— 立即检测一次 + 自动加入监控列表（此后scheduler每小时
         #             扫描，有新增/升级的异常大单会自动推送，不用再手动查）
         # /uoa NVDA off —— 停止监控该股票
         args = parts[1:]
-        if not args or not args[0].isalpha():
-            send("用法：/uoa NVDA（立即检测+加入自动监控）　/uoa NVDA off（停止监控）　/uoalist（查看监控列表）")
+        if not args:
+            from src.smart_money import get_uoa_watchlist
+            wl = get_uoa_watchlist()
+            send(f"👁 <b>UOA自动监控列表</b>（{len(wl)}只）\n{', '.join(wl) if wl else '空，用 /uoa TICKER 添加'}\n"
+                 f"盘中10:00-15:00每小时扫描，有新增/升级的异常大单自动推送")
+            return
+        if not args[0].isalpha():
+            send("用法：/uoa NVDA（检测+加入监控）　/uoa NVDA off（停止监控）　/uoa（查看列表）")
             return
         uoa_ticker = args[0].upper()
 
@@ -546,28 +383,6 @@ def handle_command(text: str):
             except Exception as e:
                 send(f"异常大单检测失败：{e}")
         _timed_thread(_do_uoa, timeout=120, send_fn=send, label="/uoa")
-
-    elif cmd == "/uoalist":
-        from src.smart_money import get_uoa_watchlist
-        wl = get_uoa_watchlist()
-        send(f"👁 <b>UOA自动监控列表</b>（{len(wl)}只）\n{', '.join(wl) if wl else '空，用 /uoa TICKER 添加'}\n"
-             f"每小时自动扫描（盘中10:00-15:00），有新增/升级的异常大单会自动推送")
-
-    elif cmd == "/shortvol":
-        # /shortvol NVDA —— 空头成交量参考（FINRA官方T+1数据，只读本地快照，
-        # 由 scheduler 09:00晨报刷新，秒级响应，不用像 /oi、/uoa 那样异步等待）
-        args = parts[1:]
-        if not args or not args[0].isalpha():
-            send("用法：/shortvol NVDA（FINRA官方空头成交量数据，T+1，仅供参考不参与打分）")
-            return
-        from src.short_volume_monitor import format_short_volume_telegram
-        send(format_short_volume_telegram(args[0].upper()))
-
-    elif cmd == "/fedwatch":
-        # /fedwatch —— 美联储加息/降息隐含概率（Fed Funds期货推算），全局宏观
-        # 信号不分ticker，只读本地快照（由 scheduler 09:00晨报刷新）
-        from src.rate_expectations import format_rate_expectation_telegram
-        send(format_rate_expectation_telegram())
 
     elif cmd == "/events":
         # /events —— 事件实验室进度：各假设样本数/结果、即将到来的财报
@@ -598,37 +413,6 @@ def handle_command(text: str):
             send(run_in_subprocess())
         _timed_thread(_do_perf, 300, send, "/perf 绩效报告")
 
-    elif cmd == "/longhold":
-        # /longhold 或 /longhold NVDA AAPL MSFT
-        custom = [p.upper() for p in parts[1:] if p.isalpha()]
-        if not custom:
-            wl = read_watchlist()
-            custom = wl[:8] if wl else ["NVDA", "AAPL", "MSFT", "GOOGL"]
-        send(f"⏳ 正在评估 {', '.join(custom)} 的长期持仓质量（每只约10-15秒）...")
-        def _do_longhold():
-            try:
-                from src.long_hold import long_hold_scan, format_longhold_telegram
-                results = long_hold_scan(custom)
-                send(format_longhold_telegram(results))
-            except Exception as e:
-                send(f"长持评估失败：{e}")
-        _timed_thread(_do_longhold, timeout=200, send_fn=send, label="/longhold")
-
-    elif cmd == "/check":
-        # /check NVDA — 综合诊断：短线九关 + GEX期权结构 + 长期持仓质量
-        custom = [p.upper() for p in parts[1:] if p.isalpha()]
-        if not custom:
-            send("用法：/check NVDA")
-            return
-        ticker = custom[0]
-        send(f"⏳ 正在生成 {ticker} 综合诊断报告（约30-90秒）...")
-        def _do_check():
-            try:
-                send(format_check_telegram(ticker))
-            except Exception as e:
-                send(f"{ticker} 诊断失败：{e}")
-        _timed_thread(_do_check, timeout=240, send_fn=send, label="/check")
-
     elif cmd == "/status":
         wl = read_watchlist()
         now = datetime.now(ET).strftime("%Y-%m-%d %H:%M ET")
@@ -637,85 +421,12 @@ def handle_command(text: str):
             f"时间：{now}\n"
             f"固定自选：{len(wl)} 只\n"
             f"{'股票：' + ', '.join(wl[:5]) + ('...' if len(wl)>5 else '') if wl else '暂无自选股'}\n\n"
-            f"定时任务：09:00 晨报 / 09:45 扫描 / 12:00 监控 / 15:30 扫描 / 16:05 日报\n"
-            f"发 /hotlist 查看今日动态扫描列表"
+            f"定时任务（ET）：09:00晨报 / 10-15点每小时监控 / 15:40月度动量（月末）/ "
+            f"15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / 16:20假突破记录 / 周五16:30周报"
         )
 
-    elif cmd == "/insider":
-        tickers_arg = [p.upper() for p in parts[1:] if p.isalpha()] or ["NVDA"]
-        send(f"⏳ 查询 {', '.join(tickers_arg)} 的 SEC Form 4 内部人交易记录...")
-        def _run_insider():
-            from src.insider_tracker import insider_summary, format_insider_telegram
-            for t in tickers_arg[:4]:
-                try:
-                    r = insider_summary(t)
-                    send(format_insider_telegram(r))
-                except Exception as e:
-                    send(f"⚠️ {t} 内部人查询失败：{e}")
-        _timed_thread(_run_insider, timeout=120, send_fn=send, label="/insider")
-
-    elif cmd == "/13dg":
-        send("⏳ 查询 SEC 最新13D/G机构大仓申报（近3天）...")
-        def _run_13dg():
-            from src.sec_13dg_monitor import check_new_13dg, format_13dg_telegram
-            wl = read_watchlist()
-            filings = check_new_13dg(watchlist=wl if wl else None)
-            if not filings:
-                send("✅ 最近3天无新13D/G申报（针对当前自选股）")
-                return
-            for f in filings[:5]:
-                send(format_13dg_telegram(f))
-        _timed_thread(_run_13dg, timeout=90, send_fn=send, label="/13dg")
-
-    elif cmd in ("/logexec", "/logskip"):
-        # 执行偏差日志（P0-C：关闭信号→实际执行的黑洞监控）
-        # 用法：/logexec NVDA 142.00 143.50   或   /logskip NVDA [信号价]
-        from src.paper_trading import log_execution
-        ticker_arg = parts[1].upper() if len(parts) > 1 else ""
-        if not ticker_arg:
-            send("用法：/logexec NVDA 142.00 143.50  或  /logskip NVDA 142.00")
-            return
-        if not ticker_arg.replace(".", "").replace("-", "").isalnum() or len(ticker_arg) > 10:
-            send("❌ ticker 格式无效")
-            return
-        if cmd == "/logexec":
-            if len(parts) < 4:
-                send("用法：/logexec NVDA <信号价> <实际成交价>\n例：/logexec NVDA 142.00 143.50")
-                return
-            try:
-                signal_px = float(parts[2])
-                actual_px = float(parts[3])
-                r = log_execution(ticker_arg, signal_price=signal_px, actual_price=actual_px,
-                                  signal_time="", action="entered",
-                                  note="Telegram手动记录")
-                dev = r.get("deviation_pct", 0)
-                send(f"✅ 已记录 {ticker_arg}：信号${signal_px:.2f}→实际${actual_px:.2f}，"
-                     f"偏差{dev:+.2f}%")
-            except ValueError:
-                send(f"价格格式错误，用法：/logexec NVDA 142.00 143.50")
-        else:  # /logskip
-            try:
-                signal_px = float(parts[2]) if len(parts) >= 3 else 0.0
-            except ValueError:
-                signal_px = 0.0
-            log_execution(ticker_arg, signal_price=signal_px, actual_price=0,
-                          signal_time="", action="skipped",
-                          note="超出限价，Telegram手动记录")
-            send(f"⏭ 已记录 {ticker_arg} 跳过（信号超出限价{f'，信号价${signal_px:.2f}' if signal_px else ''}）")
-
-    elif cmd == "/execreport":
-        from src.paper_trading import execution_deviation_report
-        r = execution_deviation_report()
-        if r.get("note"):
-            send(f"📊 <b>执行偏差报告</b>\n{r['note']}\n\n"
-                 f"总信号：{r.get('total_signals',0)}  "
-                 f"已执行：{r.get('entered',0)}  "
-                 f"跳过：{r.get('skipped',0)}  "
-                 f"手动改单：{r.get('manual_override',0)}\n"
-                 f"平均偏差：{r.get('avg_deviation_pct',0):+.2f}%  "
-                 f"最大偏差：{r.get('max_deviation_pct',0):+.2f}%")
-        else:
-            send(str(r))
+    elif cmd in RETIRED_COMMANDS:
+        send(f"{cmd} 已下线（2026-09-29精简指令）。发 /help 查看现有指令")
 
     else:
         send(f"未知指令：{cmd}\n发 /help 查看支持的指令")
