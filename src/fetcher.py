@@ -69,13 +69,32 @@ def _has_weekday_gap(daily: pd.DataFrame) -> bool:
 
 
 def daily_history(tk, period: str = "1y") -> pd.DataFrame:
-    """日线 + 小时线兜底。tk 为 yf.Ticker；兜底失败时原样返回日线。"""
+    """
+    日线 + 兜底。tk 为 yf.Ticker；兜底失败时原样返回日线。
+    缺交易日时先用Alpaca SIP日线补（配置了密钥才会用，成交量是全市场口径），
+    补不上再用yfinance小时线聚合。补的来源记在 attrs["filled_source"]。
+    """
     daily = tk.history(period=period, interval="1d")
     if not _has_weekday_gap(daily):
         return daily
     try:
+        from .alpaca_client import daily_bars
+        start = (daily.index[-1] - pd.Timedelta(days=GAP_CHECK_DAYS + 5)).tz_convert("UTC").to_pydatetime()
+        alp = daily_bars(tk.ticker, start)
+        if alp is not None and not alp.empty:
+            # fill_daily_gaps按日期分组聚合，传日线也适用（每组一根）
+            out = fill_daily_gaps(daily, alp.tz_convert(daily.index.tz))
+            if out.attrs.get("filled_dates"):
+                out.attrs["filled_source"] = "alpaca_sip"
+                return out
+    except Exception:
+        pass
+    try:
         hourly = tk.history(period="1mo", interval="1h")
-        return fill_daily_gaps(daily, hourly)
+        out = fill_daily_gaps(daily, hourly)
+        if out.attrs.get("filled_dates"):
+            out.attrs["filled_source"] = "yf_hourly"
+        return out
     except Exception:
         return daily
 
