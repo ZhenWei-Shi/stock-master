@@ -1051,7 +1051,7 @@ def full_smart_money_scan(ticker: str) -> dict:
             "gamma_exposure":     gex,
             "short_squeeze":      sqz,
             "smart_money_flow":   smf,
-            "institutional_13f":  inst,
+            "institutional":      inst,   # yfinance当前机构持仓（institutional_momentum），非13F原始文件
         },
         "strategy_note": (
             "个人投资者的优势：灵活快速。机构资金体量大，建仓需要数周甚至数月，"

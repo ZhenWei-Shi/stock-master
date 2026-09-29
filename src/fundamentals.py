@@ -73,7 +73,7 @@ def get_short_interest(info: dict, ticker: str = "") -> dict:
             details["note_float"] = f"高流通股 {flt_m:.0f}M，逼空难度大"
 
     # ── 因素4：机构持仓趋势（代理：当前持仓比例）────────
-    # 真实 QoQ 数据在 institutional_13f.py
+    # 只看当前持仓比例；13F季度增减持数据有45天以上披露延迟，与摆动周期不匹配，未接入
     if inst is not None and _valid(inst):
         inst_pct = float(inst) * 100
         details["inst_pct"] = round(inst_pct, 1)
