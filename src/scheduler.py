@@ -748,6 +748,17 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             print(f"[UOA] 监控扫描失败：{e}")
         monitor_cycle(mode, use_telegram)
 
+    def _failed_breakout_log():
+        """16:20 假突破前向样本记录（观察期，只记录不推送）：形态+伽马结构+8-K/新闻标签，
+        并回填之前样本的1/3/5日后涨跌。放在收盘20分钟后，等日线收盘价定稿。"""
+        try:
+            from src.failed_breakout_log import run_failed_breakout_log
+            r = run_failed_breakout_log(_latest_watchlist())
+            print(f"[FailedBreakout] 新增{len(r['new'])}笔{r['new']}，回填{r['filled']}项，累计{r['total']}笔"
+                  + (f"，{len(r['errors'])}只取数失败" if r["errors"] else ""))
+        except Exception as e:
+            print(f"[FailedBreakout] 记录失败：{e}")
+
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
         (9,  45): ("morning_scan",    lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
@@ -760,6 +771,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (15,  0): ("intraday_check_6", _intraday_check),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
+        (16, 20): ("failed_breakout_log", _failed_breakout_log),
     }
 
     executed_today = set()
