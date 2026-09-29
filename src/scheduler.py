@@ -759,6 +759,13 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[UOA] 监控扫描失败：{e}")
         monitor_cycle(mode, use_telegram)
+        # 月度动量账本单独盯止损（-20%保护性止损，无时间止损）
+        try:
+            from src.paper_trading import list_positions
+            if list_positions("momentum").get("open"):
+                monitor_cycle("momentum", use_telegram)
+        except Exception as e:
+            print(f"[Momentum] 止损监控失败：{e}")
 
     def _failed_breakout_log():
         """16:20 假突破前向样本记录（观察期，只记录不推送）：形态+伽马结构+8-K/新闻标签，
@@ -795,6 +802,21 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[EventLab] 运行失败：{e}")
 
+    def _momentum_rebalance():
+        """15:40 月度动量换仓（只在每月最后一个交易日执行，其他日子直接跳过）。"""
+        try:
+            from src.momentum_book import rebalance, format_rebalance
+            r = rebalance(_latest_watchlist())
+            msg = format_rebalance(r)
+            if msg:
+                print(f"[Momentum] {r.get('actions')}")
+                if use_telegram:
+                    send_telegram(msg)
+        except Exception as e:
+            print(f"[Momentum] 换仓失败：{e}")
+            if use_telegram:
+                send_telegram(f"❌ 月度动量换仓失败：{str(e)[:200]}")
+
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
         (9,  45): ("morning_scan",    lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
@@ -805,6 +827,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (14,  0): ("afternoon_13dg",  _afternoon_13dg),
         (14,  5): ("intraday_check_5", _intraday_check),
         (15,  0): ("intraday_check_6", _intraday_check),
+        (15, 40): ("momentum_rebalance", _momentum_rebalance),
         (15, 50): ("event_lab",       _event_lab),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
