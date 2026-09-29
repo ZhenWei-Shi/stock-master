@@ -71,3 +71,61 @@ def test_full_report_with_fake_prices():
     assert m["days"] == len(rep["equity"]) and m["bench_ret"] > 0
     text = format_telegram(rep)
     assert "模拟盘周报" in text and "持仓中：X" in text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-09-29：动量账本接入周报//perf
+# ─────────────────────────────────────────────────────────────────────────────
+
+import src.performance_report as pr
+from src.performance_report import pool_equal_weight, format_all, load_book
+
+
+def test_pool_equal_weight_averages_daily_returns():
+    idx = pd.bdate_range("2026-10-01", periods=3)
+    closes = pd.DataFrame({"A": [100.0, 110.0, 110.0], "B": [100.0, 90.0, 99.0]}, index=idx)
+    # 第1天平均(+10%-10%)/2=0；第2天(0%+10%)/2=+5% → 累计+5%
+    assert pool_equal_weight(closes, idx) == pytest.approx(5.0)
+
+
+def test_load_book_missing_returns_none(tmp_path, monkeypatch):
+    import src.paper_trading as pt
+    monkeypatch.setattr(pt, "_MOM", str(tmp_path / "none.json"))
+    assert load_book("momentum") is None
+
+
+def _momentum_ledger():
+    return {"account": {"initial_value": 2000, "created_at": "2026-09-30"},
+            "positions": {"1": _pos("MRNA", 3, 200.0, "2026-09-30 15:40"),
+                          "2": _pos("AMD", 1, 600.0, "2026-09-30 15:40")}}
+
+
+def test_momentum_report_short_history_has_pool_but_no_ratios():
+    pytest.importorskip("quantstats")
+    idx = pd.bdate_range("2026-09-30", periods=3)
+    spy = pd.Series([500.0, 505.0, 510.0], index=idx)
+    px = {"MRNA": pd.Series([200.0, 204.0, 208.0], index=idx), "AMD": pd.Series([600.0, 606.0, 612.0], index=idx)}
+    pool = pd.DataFrame({"X": [100.0, 101.0, 102.01]}, index=idx)
+    rep = pr.build_report(_momentum_ledger(), fetch=lambda t: spy if t == "SPY" else px[t],
+                          mode="momentum", pool_fetch=lambda: pool)
+    assert rep["metrics"]["too_short"] and rep["pool_ret"] == pytest.approx(2.01)
+    text = pr.format_telegram(rep, header=False)
+    assert "月度动量账本" in text and "同池等权" in text and "暂不计算" in text
+    assert "时间止损制度" not in text
+
+
+def test_format_all_handles_not_started_and_failures(monkeypatch):
+    pytest.importorskip("quantstats")
+    idx = pd.bdate_range("2026-09-01", periods=20)
+    spy = pd.Series([500 + i for i in range(20)], index=idx, dtype=float)
+    x = pd.Series([100 + (i % 3) for i in range(20)], index=idx, dtype=float)
+    ledger = {"account": {"initial_value": 2000, "created_at": "2026-09-01"},
+              "positions": {"1": _pos("X", 5, 100.0, "2026-09-02", "2026-09-10", 102.0, 10.0, "Agent超时强制平仓")}}
+    paper = pr.build_report(ledger, fetch=lambda t: spy if t == "SPY" else x)
+    text = format_all({"paper": paper, "momentum": None})
+    assert "原模拟盘" in text and "月度动量账本</b>\n尚未开始" in text
+
+    # 单个账本出错不影响另一个
+    monkeypatch.setattr(pr, "load_book", lambda mode: (_ for _ in ()).throw(RuntimeError("boom")) if mode == "paper" else None)
+    text2 = format_all()
+    assert "报告生成失败：boom" in text2 and "尚未开始" in text2
