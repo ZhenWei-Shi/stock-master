@@ -268,6 +268,9 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         return {"verdict": "ABORT", "reason": f"数据获取失败：{e}",
                 "score": 0, "gates": {}, "entry_plan": None}
 
+    # ETF没有财报：不调财报日历/财报分析接口，否则Yahoo每次返回404刷日志（QQQ在watchlist里）
+    is_etf = str((info or {}).get("quoteType", "")).upper() in ("ETF", "MUTUALFUND", "INDEX")
+
     if hist_1y.empty:
         return {"verdict": "ABORT", "reason": "无历史数据",
                 "score": 0, "gates": {}, "entry_plan": None}
@@ -516,7 +519,7 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
 
     # ── Gate I：财报前禁入 ─────────────────────────────────
     try:
-        cal = tk.calendar
+        cal = None if is_etf else tk.calendar
         next_earnings = None
         if isinstance(cal, dict):
             ed = cal.get("Earnings Date")
@@ -672,9 +675,12 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             bonus_notes.append(f"营收加速 {float(rev_growth)*100:.0f}%（+8分）")
 
     # ── 财报质量门（EPS加速度 + CANSLIM + PEAD）─────────────
+    if is_etf:
+        gates["earnings_blackout"] = {"pass": True, "note": "ETF没有财报，跳过"}
+        gates["earnings_quality"] = {"pass": "skip", "note": "ETF没有财报，不适用"}
     try:
         from .earnings_analyzer import full_earnings_analysis, check_position_correlation
-        ea = full_earnings_analysis(ticker)
+        ea = {"ok": False} if is_etf else full_earnings_analysis(ticker)
         if ea.get("ok"):
             cs_score = ea.get("canslim_score", 0)
             grade    = ea.get("overall_grade", "")
