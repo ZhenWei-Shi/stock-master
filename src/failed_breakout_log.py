@@ -96,8 +96,46 @@ def gamma_context(gex: dict, high: float, close: float, prev_close: float) -> di
 # 消息标签
 # ─────────────────────────────────────────────────────────────
 
+# 8-K item编号 → 含义（SEC Form 8-K General Instructions B）。只收常见项；
+# 用于在样本里区分"实质性事件"和例行公告（2026-09-29 ASTS：5.02高管变动）。
+ITEM_NAMES = {
+    "1.01": "签订重大协议", "1.02": "终止重大协议", "1.03": "破产/接管",
+    "2.01": "完成收购/出售资产", "2.02": "业绩发布", "2.03": "新增重大债务",
+    "2.04": "债务加速到期", "2.05": "退出/重组成本", "2.06": "重大资产减值",
+    "3.01": "退市/不符合上市标准", "3.02": "未注册股票发行", "3.03": "股东权利变更",
+    "4.01": "更换审计师", "4.02": "财报不可依赖（需重述）",
+    "5.01": "控制权变更", "5.02": "高管/董事变动或薪酬安排", "5.03": "章程修改",
+    "5.07": "股东大会投票结果", "7.01": "Reg FD披露", "8.01": "其他事件", "9.01": "财务报表与附件",
+}
+# 例行/附属项：只有这些item时不算"实质性"事件
+ROUTINE_ITEMS = {"7.01", "8.01", "9.01", "5.07"}
+
+
+def parse_recent_8k(recent: dict, cik: str, trade_date: str) -> list:
+    """从EDGAR submissions的filings.recent里挑出交易日当天或前FILING_LOOKBACK天的8-K（纯函数）。"""
+    start = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=FILING_LOOKBACK)).strftime("%Y-%m-%d")
+    cols = {k: recent.get(k, []) for k in ("form", "filingDate", "items", "accessionNumber", "primaryDocument")}
+    out = []
+    for i, form in enumerate(cols["form"]):
+        get = lambda k: cols[k][i] if i < len(cols[k]) else ""
+        d = get("filingDate")
+        if form not in ("8-K", "8-K/A") or not (start <= d <= trade_date):
+            continue
+        items = [x.strip() for x in (get("items") or "").split(",") if x.strip()]
+        acc = get("accessionNumber").replace("-", "")
+        out.append({
+            "date": d,
+            "items": ",".join(items),
+            "labels": [ITEM_NAMES.get(x, x) for x in items],
+            "material": any(x not in ROUTINE_ITEMS for x in items),
+            "url": (f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc}/{get('primaryDocument')}"
+                    if acc and get("primaryDocument") else None),
+        })
+    return out
+
+
 def _recent_8k(ticker: str, trade_date: str) -> list:
-    """交易日当天或前FILING_LOOKBACK天内的8-K（含items编号，如5.02=高管变动）。"""
+    """交易日当天或前FILING_LOOKBACK天内的8-K，附item含义和正文链接。"""
     try:
         from .insider_tracker import get_cik, _EDGAR_HEADERS
         cik = get_cik(ticker)
@@ -109,17 +147,7 @@ def _recent_8k(ticker: str, trade_date: str) -> list:
         recent = r.json().get("filings", {}).get("recent", {})
     except Exception:
         return []
-
-    start = (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=FILING_LOOKBACK)).strftime("%Y-%m-%d")
-    forms = recent.get("form", [])
-    dates = recent.get("filingDate", [])
-    items = recent.get("items", [])
-    out = []
-    for i, form in enumerate(forms):
-        d = dates[i] if i < len(dates) else ""
-        if form in ("8-K", "8-K/A") and start <= d <= trade_date:
-            out.append({"date": d, "items": items[i] if i < len(items) else ""})
-    return out
+    return parse_recent_8k(recent, cik, trade_date)
 
 
 def news_context(ticker: str, trade_date: str) -> dict:
@@ -135,7 +163,8 @@ def news_context(ticker: str, trade_date: str) -> dict:
         }
     except Exception as e:
         news = {"news_error": str(e)[:120]}
-    return {"has_8k": bool(filings), "filings_8k": filings, **news}
+    return {"has_8k": bool(filings), "has_material_8k": any(f["material"] for f in filings),
+            "filings_8k": filings, **news}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -266,6 +295,7 @@ def summarize(records: list | None = None, horizon: int = 3) -> list:
         "收盘在翻转点下方": lambda r: r["gamma"].get("close_vs_flip") == "below",
         "当天有8-K": lambda r: r["news"].get("has_8k") is True,
         "无8-K": lambda r: r["news"].get("has_8k") is False,
+        "实质性8-K（非例行公告）": lambda r: r["news"].get("has_material_8k") is True,
         "伽马墙+8-K": lambda r: r["gamma"].get("rejected_at_wall") is True and r["news"].get("has_8k") is True,
         "低于MA200": lambda r: r.get("below_ma200") is True,
     }

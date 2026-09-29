@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 import src.failed_breakout_log as fbl
-from src.failed_breakout_log import gamma_context, fill_forward_returns, summarize
+from src.failed_breakout_log import gamma_context, fill_forward_returns, summarize, parse_recent_8k
 
 # 2026-09-29 ASTS收盘时的真实GEX分布（节选）
 _ASTS_GEX = {
@@ -121,3 +121,33 @@ class TestRun:
         rec = fbl._load()[0]
         assert rec["in_watchlist"] is True and rec["news"]["has_8k"] is True
         assert rec["gamma"]["ok"] is True and rec["f1"] is None
+
+
+class TestParse8K:
+    # 与EDGAR submissions API的filings.recent结构一致（列式数组）
+    RECENT = {
+        "form": ["8-K", "10-Q", "8-K", "8-K"],
+        "filingDate": ["2026-09-28", "2026-09-28", "2026-09-20", "2026-09-29"],
+        "items": ["5.02,9.01", "", "2.02", "7.01,9.01"],
+        "accessionNumber": ["0001493152-26-044647", "x", "y", "0001493152-26-044700"],
+        "primaryDocument": ["form8-k.htm", "q.htm", "e.htm", "pr.htm"],
+    }
+
+    def test_window_labels_and_url(self):
+        out = parse_recent_8k(self.RECENT, "1780312", "2026-09-29")
+        assert [f["date"] for f in out] == ["2026-09-28", "2026-09-29"]
+        exec_change = out[0]
+        assert exec_change["labels"] == ["高管/董事变动或薪酬安排", "财务报表与附件"]
+        assert exec_change["material"] is True
+        assert exec_change["url"] == ("https://www.sec.gov/Archives/edgar/data/1780312/"
+                                      "000149315226044647/form8-k.htm")
+
+    def test_routine_only_is_not_material(self):
+        out = parse_recent_8k(self.RECENT, "1780312", "2026-09-29")
+        assert out[1]["items"] == "7.01,9.01" and out[1]["material"] is False
+
+    def test_unknown_item_kept_as_code(self):
+        recent = {"form": ["8-K"], "filingDate": ["2026-09-29"], "items": ["6.05"],
+                  "accessionNumber": ["a"], "primaryDocument": ["b.htm"]}
+        out = parse_recent_8k(recent, "1", "2026-09-29")
+        assert out[0]["labels"] == ["6.05"] and out[0]["material"] is True
