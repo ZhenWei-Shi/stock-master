@@ -133,3 +133,67 @@ def test_portfolio_runs_with_vectorbt():
     trades = pd.DataFrame(simulate_trades(h, _sig(h, [260, 280], stop_frac=0.05), "X"))
     pf = run_portfolio({"X": h}, trades)
     assert pf.stats()["Total Trades"] >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-09-29：ablation / SHORT
+# ─────────────────────────────────────────────────────────────────────────────
+
+from src.backtest import ablate, HARD_GATES
+
+
+class TestSignalFlags:
+    def test_flag_columns_and_go_consistency(self):
+        h = _uptrend()
+        sig = compute_signals(h, pd.Series(100.0, index=h.index), pd.Series(15.0, index=h.index), [])
+        assert all(g in sig.columns for g in HARD_GATES)
+        # go必须所有硬门都通过
+        assert sig.loc[sig["go"], list(HARD_GATES)].all().all()
+
+    def test_max_fails_scores_near_miss_days_but_go_unchanged(self):
+        h = _uptrend()
+        spy, vix = pd.Series(100.0, index=h.index), pd.Series(15.0, index=h.index)
+        strict = compute_signals(h, spy, vix, [])
+        loose = compute_signals(h, spy, vix, [], max_fails=1)
+        assert (strict["go"] == loose["go"]).all()
+        near_miss = loose[(~loose[list(HARD_GATES)]).sum(axis=1) == 1]
+        assert near_miss["score"].notna().all()
+
+    def test_ablate_turns_single_failure_into_go(self):
+        idx = pd.bdate_range("2026-01-05", periods=3)
+        sig = pd.DataFrame({"trend": [True, False, False], "rsi": [True, True, False],
+                            "volume": True, "stop_distance": True, "earnings_blackout": True,
+                            "score": [80, 80, None], "go": [True, False, False]}, index=idx)
+        out = ablate(sig, ("trend",))
+        assert list(out["go"]) == [True, True, False]
+
+    def test_short_flags_on_downtrend(self):
+        h = _uptrend()
+        h = h.iloc[::-1].set_axis(h.index)
+        sig = compute_signals(h, pd.Series(100.0, index=h.index), pd.Series(15.0, index=h.index), [],
+                              direction="SHORT")
+        assert sig["trend"].mean() > 0.5
+
+
+class TestSimulateShort:
+    def test_stop_above_entry(self):
+        h = _ohlc([100, 101, 102], [101, 106, 103], [99, 100, 101], [100, 102, 102])
+        t = simulate_trades(h, _sig(h, [0]), direction="SHORT")[0]
+        assert t["reason"] == "stop" and t["exit"] == 105.0 and t["ret_pct"] == -5.0
+
+    def test_gap_above_stop_fills_at_open(self):
+        h = _ohlc([100, 110], [101, 111], [99, 108], [100, 109])
+        t = simulate_trades(h, _sig(h, [0]), direction="SHORT")[0]
+        assert t["reason"] == "stop_gap" and t["ret_pct"] == -10.0
+
+    def test_profit_when_price_falls_then_time_stop(self):
+        n = 12
+        # 1/5入场，1/16（第10根，11个日历日）触发时间止损，当天收90
+        h = _ohlc([100] * n, [101] * n, [89] * n, [100] * 9 + [90] * 3)
+        t = simulate_trades(h, _sig(h, [0]), direction="SHORT")[0]
+        assert t["reason"] == "time" and t["ret_pct"] == 10.0
+
+    def test_random_control_short_direction(self):
+        h = _uptrend(400)
+        ctrl = random_control_trades({"X": h}, pd.DataFrame({"ticker": ["X"] * 3}), seed=2, direction="SHORT")
+        assert len(ctrl) == 3 and (ctrl["direction"] == "SHORT").all()

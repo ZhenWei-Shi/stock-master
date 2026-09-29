@@ -129,12 +129,23 @@ def days_to_next_earnings(index: pd.DatetimeIndex, earnings: list) -> np.ndarray
     return out
 
 
+HARD_GATES = ("trend", "rsi", "volume", "stop_distance", "earnings_blackout")
+
+# SHORT方向的gate阈值与cold_model一致：trend=价格<MA20<MA50，RSI激进模式20-55
+RSI_SHORT_AGG_MIN, RSI_SHORT_AGG_MAX = 20, 55
+
+
 def compute_signals(hist: pd.DataFrame, spy_close: pd.Series, vix: pd.Series,
-                    earnings: list | None = None, start: int = 252) -> pd.DataFrame:
+                    earnings: list | None = None, start: int = 252,
+                    direction: str = "LONG", max_fails: int = 0) -> pd.DataFrame:
     """
-    对一只股票逐日计算激进模式LONG的技术面verdict。返回按日期索引的DataFrame：
-    go / score / path(A=突破区,B=回调企稳,-) / conviction / stop_frac / fails。
+    对一只股票逐日计算激进模式的技术面verdict。返回按日期索引的DataFrame：
+      go / score / path(A=突破区,B=回调企稳,-) / conviction / stop_frac / fails，
+      以及每个硬门的逐日结果列（HARD_GATES）。
+    max_fails>0时，只差max_fails个硬门的日子也会算出score/path/conviction，
+    供ablate()做"关掉某个门"的对比；go本身始终要求所有硬门通过。
     """
+    long = direction == "LONG"
     close, high, low, vol = hist["Close"], hist["High"], hist["Low"], hist["Volume"]
     ma20 = close.rolling(20).mean()
     ma50 = close.rolling(50).mean()
@@ -155,45 +166,58 @@ def compute_signals(hist: pd.DataFrame, spy_close: pd.Series, vix: pd.Series,
     vix_a = vix.reindex(close.index).ffill().fillna(20.0)
     d2e = days_to_next_earnings(close.index, earnings or [])
 
-    trend_ok = (close > ma20) & (ma20 > ma50) & (ma50 > ma200) & ma200.notna()
-    rsi_ok = rsi.between(RSI_AGG_MIN, RSI_AGG_MAX)
-    heavy_sell = (price_chg < PRICE_DROP_WARN_PCT) & (vol_ratio > SELLOFF_VOL_RATIO)
-    vol_ok = (vol_ratio >= VOL_RATIO_MIN) & ~heavy_sell
-    stop_ok = stop_pct.between(MIN_STOP_PCT, MAX_STOP_PCT_AGG)
-    earn_ok = d2e > EARNINGS_BLACKOUT_DAYS
+    if long:
+        trend_ok = (close > ma20) & (ma20 > ma50) & (ma50 > ma200) & ma200.notna()
+        rsi_ok = rsi.between(RSI_AGG_MIN, RSI_AGG_MAX)
+        heavy_sell = (price_chg < PRICE_DROP_WARN_PCT) & (vol_ratio > SELLOFF_VOL_RATIO)
+        vol_ok = (vol_ratio >= VOL_RATIO_MIN) & ~heavy_sell
+    else:
+        trend_ok = (close < ma20) & (ma20 < ma50)
+        rsi_ok = rsi.between(RSI_SHORT_AGG_MIN, RSI_SHORT_AGG_MAX)
+        vol_ok = vol_ratio >= VOL_RATIO_MIN
+    flags = pd.DataFrame({
+        "trend": trend_ok, "rsi": rsi_ok, "volume": vol_ok,
+        "stop_distance": stop_pct.between(MIN_STOP_PCT, MAX_STOP_PCT_AGG),
+        "earnings_blackout": pd.Series(d2e > EARNINGS_BLACKOUT_DAYS, index=close.index),
+    }).fillna(False).astype(bool)
+    n_fail = (~flags).sum(axis=1).to_numpy()
+    fl = flags.to_numpy()
 
     rows = []
     idx = close.index
     for i in range(start, len(close)):
-        fails = [name for name, ok in (("trend", trend_ok.iloc[i]), ("rsi", rsi_ok.iloc[i]),
-                                       ("volume", vol_ok.iloc[i]), ("stop_distance", stop_ok.iloc[i]),
-                                       ("earnings_blackout", earn_ok[i])) if not ok]
-        if fails:
-            rows.append((idx[i], False, None, "-", None, None, ",".join(fails)))
+        fails = ",".join(g for g, ok in zip(HARD_GATES, fl[i]) if not ok)
+        base = (idx[i], *fl[i])
+        if n_fail[i] > max_fails:
+            rows.append(base + (False, None, "-", None, float(stop_pct.iloc[i]) / 100, fails))
             continue
 
         p20 = pct_20h.iloc[i]
         path, near, pullback = "-", True, None
-        if p20 >= NEAR_HIGH_BREAKOUT_PCT:
-            path = "A"
-        elif p20 >= PULLBACK_ZONE_MAX_PCT:
-            path = "-"
-        elif p20 >= PULLBACK_ZONE_MIN_PCT:
-            pullback = _check_pullback_setup(close.iloc[:i + 1], vol.iloc[:i + 1], rsi.iloc[:i + 1],
-                                             ma20.iloc[i], close.iloc[i])
-            near = True if pullback["confirmed"] else "warn"
-            path = "B" if pullback["confirmed"] else "-"
-        else:
-            near = "warn"
+        if long:
+            if p20 >= NEAR_HIGH_BREAKOUT_PCT:
+                path = "A"
+            elif p20 >= PULLBACK_ZONE_MAX_PCT:
+                path = "-"
+            elif p20 >= PULLBACK_ZONE_MIN_PCT:
+                pullback = _check_pullback_setup(close.iloc[:i + 1], vol.iloc[:i + 1], rsi.iloc[:i + 1],
+                                                 ma20.iloc[i], close.iloc[i])
+                near = True if pullback["confirmed"] else "warn"
+                path = "B" if pullback["confirmed"] else "-"
+            else:
+                near = "warn"
 
-        vcp = _check_vcp_contraction(hist.iloc[i + 1 - VCP_LOOKBACK_DAYS:i + 1])
-        lb = MACD_MOMENTUM_LOOKBACK
-        macd_pass = True if (macd_h.iloc[i] > 0 or macd_h.iloc[i] > macd_h.iloc[i - lb]) else "warn"
-        vlb = VP_DIVERGENCE_LOOKBACK
-        diverge = close.iloc[i] - close.iloc[i - vlb] > 0 and obv.iloc[i] - obv.iloc[i - vlb] <= 0
-        vp_pass = "warn" if diverge else True
+        lb, vlb = MACD_MOMENTUM_LOOKBACK, VP_DIVERGENCE_LOOKBACK
+        if long:
+            vcp = _check_vcp_contraction(hist.iloc[i + 1 - VCP_LOOKBACK_DAYS:i + 1])["contracted"]
+            macd_pass = True if (macd_h.iloc[i] > 0 or macd_h.iloc[i] > macd_h.iloc[i - lb]) else "warn"
+            diverge = close.iloc[i] - close.iloc[i - vlb] > 0 and obv.iloc[i] - obv.iloc[i - vlb] <= 0
+        else:
+            vcp = False
+            macd_pass = True if (macd_h.iloc[i] < 0 or macd_h.iloc[i] <= macd_h.iloc[i - lb]) else "warn"
+            diverge = close.iloc[i] - close.iloc[i - vlb] < 0 and obv.iloc[i] - obv.iloc[i - vlb] >= 0
         rs_i = rs.iloc[i]
-        conv, _ = _momentum_conviction("LONG", vcp["contracted"], macd_pass, vp_pass,
+        conv, _ = _momentum_conviction(direction, vcp, macd_pass, "warn" if diverge else True,
                                        None if pd.isna(rs_i) else float(rs_i), {}, {})
 
         gates = {"trend": {"pass": True}, "rsi": {"pass": True}, "volume": {"pass": True},
@@ -208,10 +232,22 @@ def compute_signals(hist: pd.DataFrame, spy_close: pd.Series, vix: pd.Series,
         if pullback is not None and pullback["confirmed"]:
             bonus += PULLBACK_BONUS
         adjusted = min(100, score + bonus)
-        rows.append((idx[i], adjusted >= GO_THRESHOLD_AGG, adjusted, path, conv,
-                     float(stop_pct.iloc[i]) / 100, ""))
+        rows.append(base + (n_fail[i] == 0 and adjusted >= GO_THRESHOLD_AGG, adjusted, path, conv,
+                            float(stop_pct.iloc[i]) / 100, fails))
 
-    return pd.DataFrame(rows, columns=["date", "go", "score", "path", "conviction", "stop_frac", "fails"]).set_index("date")
+    cols = ["date", *HARD_GATES, "go", "score", "path", "conviction", "stop_frac", "fails"]
+    return pd.DataFrame(rows, columns=cols).set_index("date")
+
+
+def ablate(sig: pd.DataFrame, disabled: tuple = ()) -> pd.DataFrame:
+    """
+    关掉disabled里的硬门（视为通过）后重新判定go。sig须由max_fails>=len(disabled)
+    的compute_signals生成，否则被关掉的门所在日子没有score。
+    """
+    keep = [g for g in HARD_GATES if g not in disabled]
+    out = sig.copy()
+    out["go"] = sig[keep].all(axis=1) & sig["score"].notna() & (sig["score"].fillna(0) >= GO_THRESHOLD_AGG)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -220,13 +256,16 @@ def compute_signals(hist: pd.DataFrame, spy_close: pd.Series, vix: pd.Series,
 
 def simulate_trades(hist: pd.DataFrame, signals: pd.DataFrame, ticker: str = "",
                     take_profit_atr: float | None = None,
-                    max_hold_days: int = MAX_HOLD_CALENDAR_DAYS) -> list:
+                    max_hold_days: int = MAX_HOLD_CALENDAR_DAYS, direction: str = "LONG") -> list:
     """
-    信号日收盘入场；之后每天先看止损（开盘已低于止损→按开盘价成交，否则最低价
+    信号日收盘入场；之后每天先看止损（开盘已越过止损→按开盘价成交，否则盘中
     触及→按止损价成交），再看止盈（可选），最后看时间止损（持有超过max_hold_days
     个日历日→按当天收盘价平仓）。同一标的持仓期间不再开新仓（防摊平）。
     数据结束时仍持仓的交易标记为open，不计入统计。
+    direction="SHORT"时止损在上方、止盈在下方，收益=(入场-出场)/入场（不含融券成本）。
     """
+    if direction == "SHORT":
+        return _simulate_short(hist, signals, ticker, take_profit_atr, max_hold_days)
     o, h, l, c = (hist[k].to_numpy(dtype=float) for k in ("Open", "High", "Low", "Close"))
     dates = hist.index
     pos_of = {d: k for k, d in enumerate(dates)}
@@ -262,6 +301,45 @@ def simulate_trades(hist: pd.DataFrame, signals: pd.DataFrame, ticker: str = "",
             "ret_pct": round((exit_px / entry - 1) * 100, 3) if exit_px is not None else None,
             "path": s["path"], "score": s["score"], "conviction": s["conviction"],
             "stop_frac": s["stop_frac"],
+        })
+    return trades
+
+
+def _simulate_short(hist, signals, ticker, take_profit_atr, max_hold_days) -> list:
+    o, h, l, c = (hist[k].to_numpy(dtype=float) for k in ("Open", "High", "Low", "Close"))
+    dates = hist.index
+    pos_of = {d: k for k, d in enumerate(dates)}
+    trades, busy_until = [], -1
+    for d, s in signals[signals["go"]].iterrows():
+        i = pos_of.get(d)
+        if i is None or i <= busy_until:
+            continue
+        entry = c[i]
+        stop = entry * (1 + s["stop_frac"])
+        tp = entry * (1 - s["stop_frac"] / ATR_STOP_MULT * take_profit_atr) if take_profit_atr else None
+        exit_px, reason, j = None, "open", i
+        for j in range(i + 1, len(c)):
+            if o[j] >= stop:
+                exit_px, reason = o[j], "stop_gap"
+            elif h[j] >= stop:
+                exit_px, reason = stop, "stop"
+            elif tp is not None and o[j] <= tp:
+                exit_px, reason = o[j], "target_gap"
+            elif tp is not None and l[j] <= tp:
+                exit_px, reason = tp, "target"
+            elif (dates[j] - dates[i]).days > max_hold_days:
+                exit_px, reason = c[j], "time"
+            if exit_px is not None:
+                break
+        busy_until = j
+        trades.append({
+            "ticker": ticker, "entry_date": d, "entry": round(entry, 4),
+            "exit_date": dates[j] if exit_px is not None else None,
+            "exit": round(exit_px, 4) if exit_px is not None else None,
+            "reason": reason, "bars": j - i,
+            "ret_pct": round((1 - exit_px / entry) * 100, 3) if exit_px is not None else None,
+            "path": s["path"], "score": s["score"], "conviction": s["conviction"],
+            "stop_frac": s["stop_frac"], "direction": "SHORT",
         })
     return trades
 
@@ -316,7 +394,7 @@ def baseline_forward_returns(prices: dict, tickers: list, bars: int, start: int 
 
 
 def random_control_trades(prices: dict, trades: pd.DataFrame, seed: int = 0,
-                          start: int = 252) -> pd.DataFrame:
+                          start: int = 252, direction: str = "LONG") -> pd.DataFrame:
     """
     对照组：每只股票随机挑与真实信号同样多的入场日，止损宽度用当天的1.5ATR，
     出场规则完全相同。用来回答"GO信号比随便哪天买入好在哪里"——单看组合
@@ -334,7 +412,7 @@ def random_control_trades(prices: dict, trades: pd.DataFrame, seed: int = 0,
                             "stop_frac": stop_frac}, index=c.index)
         sig.iloc[np.sort(days), sig.columns.get_loc("go")] = True
         # 抽3倍候选日：同一标的持仓期间的信号会被跳过，保证最后能凑够k笔
-        out += simulate_trades(hist, sig, t)[:k]
+        out += simulate_trades(hist, sig, t, direction=direction)[:k]
     return pd.DataFrame(out)
 
 
