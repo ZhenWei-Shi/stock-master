@@ -384,6 +384,7 @@ def handle_command(text: str):
             "/logskip NVDA              记录跳过（超出限价）\n"
             "/execreport                执行偏差统计报告\n"
             "/events                    事件实验室进度（财报期权假设的样本与结果）\n"
+            "/risk NVDA                 风控检查（九关已降级为风控层，不给买卖信号）\n"
             "/perf                      模拟盘绩效（回撤/Sharpe/对比SPY/胜率区间）\n"
             "/status                    运行状态\n"
             "/help                      显示帮助"
@@ -572,6 +573,19 @@ def handle_command(text: str):
         # /events —— 事件实验室进度：各假设样本数/结果、即将到来的财报
         from src.event_lab import summarize
         send(summarize())
+
+    elif cmd == "/risk":
+        # /risk NVDA —— 风控层检查（九关2026-09-29降级后只保留风控类gate：止损宽度/
+        # 财报/发债/新闻/PDT/时段/VIX/宏观），不给买卖信号
+        if len(parts) < 2:
+            send("用法：/risk NVDA（只看风控能不能做，不是买卖信号）")
+        else:
+            tk = parts[1].upper()
+
+            def _do_risk():
+                from src.risk_layer import risk_check, format_risk
+                send(format_risk(risk_check(tk)))
+            _timed_thread(_do_risk, 120, send, f"/risk {tk}")
 
     elif cmd == "/perf":
         # /perf —— 模拟盘绩效（资金曲线：回撤/Sharpe/对比SPY + 逐笔胜率区间）。
