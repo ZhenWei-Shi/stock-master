@@ -12,6 +12,8 @@ cold_model.py 核心决策引擎回归测试
   - _check_pullback_setup      回调企稳确认（路径B：2026-08-13新增，MA20支撑+缩量+RSI回升）
   - _calc_atr                  ATR止损距离计算（含NaN兜底路径）
   - _rsi_series                RSI序列计算
+  - _sector_side / _sector_gate_for_direction / _sector_bonus / _momentum_conviction
+                               按方向记分（2026-09-29：修SHORT下看多信号照样加分）
 
 不覆盖 cold_decision()/scan_tickers() 本身——这两个是联网请求的编排层，
 不是纯函数，超出"直接导入生产代码测纯逻辑"这套测试哲学的适用范围。
@@ -29,6 +31,10 @@ from src.cold_model import (
     _check_pullback_setup,
     _calc_atr,
     _rsi_series,
+    _sector_side,
+    _sector_gate_for_direction,
+    _sector_bonus,
+    _momentum_conviction,
 )
 import src.cold_model as cm
 
@@ -360,3 +366,83 @@ class TestRsiSeries:
         close = pd.Series(100 + np.cumsum(np.random.randn(80)))
         r = _rsi_series(close, period=14).dropna()
         assert (r >= 0).all() and (r <= 100).all()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 按方向记分（2026-09-29）：SHORT下看多信号不能加分，LONG行为保持不变
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TOP_SECTOR = {"pass": True, "note": "板块【科技】排名第2/14，热度+2.9% — 顺势做多", "rank": 2}
+_BOTTOM_SECTOR = {"pass": "warn", "note": "板块【能源】排名第13/14（后3名），热度-3.0% — 逆风区域，建议等板块轮动确认", "rank": 13}
+_MID_SECTOR = {"pass": True, "note": "板块【金融】排名第7/14，热度+0.1% — 背景中性", "rank": 7}
+
+
+class TestSectorByDirection:
+    def test_side_classification(self):
+        assert _sector_side(_TOP_SECTOR) == "top"
+        assert _sector_side(_BOTTOM_SECTOR) == "bottom"
+        assert _sector_side(_MID_SECTOR) == "mid"
+        assert _sector_side({"pass": True, "note": "跳过", "rank": None}) == "mid"
+
+    def test_long_gate_unchanged(self):
+        for g in (_TOP_SECTOR, _BOTTOM_SECTOR, _MID_SECTOR):
+            assert _sector_gate_for_direction(g, "LONG") == {"pass": g["pass"], "note": g["note"]}
+
+    def test_short_gate_swaps_strong_and_weak(self):
+        top = _sector_gate_for_direction(_TOP_SECTOR, "SHORT")
+        bottom = _sector_gate_for_direction(_BOTTOM_SECTOR, "SHORT")
+        assert top["pass"] == "warn" and "逆势做空" in top["note"] and "顺势做多" not in top["note"]
+        assert bottom["pass"] is True and "顺势做空" in bottom["note"]
+        assert _sector_gate_for_direction(_MID_SECTOR, "SHORT")["pass"] is True
+
+    def test_long_top_sector_bonus_with_accel(self):
+        delta, notes = _sector_bonus("LONG", "top", 2, True)
+        assert delta == cm.SECTOR_TOP_BONUS + cm.SECTOR_ACCEL_BONUS and len(notes) == 2
+
+    def test_short_gets_no_bonus_from_hot_sector(self):
+        assert _sector_bonus("SHORT", "top", 2, True) == (0, [])
+
+    def test_short_bonus_from_weak_sector_ignores_accel(self):
+        delta, _ = _sector_bonus("SHORT", "bottom", 13, True)
+        assert delta == cm.SECTOR_TOP_BONUS
+        assert _sector_bonus("LONG", "bottom", 13, False) == (0, [])
+
+
+_BULL_UOA = {"ok": True, "bias": "bullish", "net_call_flow": 2000, "net_put_flow": 0}
+_BEAR_UOA = {"ok": True, "bias": "bearish", "net_call_flow": 0, "net_put_flow": 2000}
+_BULL_SMF = {"ok": True, "smf_bias": "bullish", "is_closing_window": False}
+_BEAR_SMF = {"ok": True, "smf_bias": "bearish", "is_closing_window": False}
+
+
+class TestMomentumConvictionByDirection:
+    def test_long_all_bullish_matches_previous_scoring(self):
+        # VCP+2、MACD+1、OBV+1、跑赢SPY 20% +3、Call主导+1、资金流入+2 = +10
+        c, notes = _momentum_conviction("LONG", True, True, True, 0.20, _BULL_UOA, _BULL_SMF)
+        assert c == 10 and len(notes) == 6
+
+    def test_long_bearish_flows_deduct(self):
+        c, _ = _momentum_conviction("LONG", False, "warn", "warn", -0.30, _BEAR_UOA, _BEAR_SMF)
+        assert c == -1 - 2 - 2 - 1 - 1 - 2
+
+    def test_short_bullish_flows_deduct_instead_of_adding(self):
+        # 9/29 ASTS的情形：看多资金/期权信号在SHORT下必须是扣分
+        c, notes = _momentum_conviction("SHORT", True, True, True, None, _BULL_UOA, _BULL_SMF)
+        assert c == 1 + 1 - 1 - 2
+        assert not any("VCP" in n for n in notes)
+
+    def test_short_bearish_flows_add(self):
+        c, _ = _momentum_conviction("SHORT", False, True, True, -0.20, _BEAR_UOA, _BEAR_SMF)
+        assert c == 1 + 1 + 3 + 1 + 2
+
+    def test_short_relative_strength_is_mirrored(self):
+        c_strong, notes = _momentum_conviction("SHORT", False, True, True, 0.30, {}, {})
+        assert c_strong == 1 + 1 - 1 and "跑赢SPY30%(-1)" in notes
+
+    def test_short_put_flow_needs_same_300_threshold_as_call(self):
+        small_put = {"ok": True, "bias": "bearish", "net_put_flow": 100}
+        c, _ = _momentum_conviction("SHORT", False, True, True, None, small_put, {})
+        assert c == 2
+
+    def test_missing_modules_are_neutral(self):
+        c, _ = _momentum_conviction("SHORT", False, True, True, None, {}, {})
+        assert c == 2

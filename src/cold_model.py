@@ -613,8 +613,9 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             or _SECTOR_MAP.get(info.get("sector", ""))
         )
         sector_g = check_sector_gate(ticker, sector_etf=precomputed_etf)
-        gates["sector_rotation"] = {"pass": sector_g["pass"], "note": sector_g["note"]}
+        gates["sector_rotation"] = _sector_gate_for_direction(sector_g, direction)
         gates["_sector_meta"]    = {k: sector_g.get(k) for k in ("rank", "etf", "accel", "heat")}
+        gates["_sector_meta"]["side"] = _sector_side(sector_g)
     except Exception:
         gates["sector_rotation"] = {"pass": True, "note": "板块门跳过（模块加载失败）"}
         gates["_sector_meta"]    = {}
@@ -652,19 +653,18 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     bonus = 0
     bonus_notes = []
     sg_meta = gates.get("_sector_meta", {})
-    sg_pass = gates.get("sector_rotation", {}).get("pass", True)
-    sg_rank = sg_meta.get("rank")
-    if sg_pass is True and isinstance(sg_rank, int) and sg_rank <= 3:
-        bonus += SECTOR_TOP_BONUS
-        bonus_notes.append(f"顺风板块前{sg_rank}名（+{SECTOR_TOP_BONUS}）")
-        if sg_meta.get("accel"):
-            bonus += SECTOR_ACCEL_BONUS
-            bonus_notes.append(f"板块资金加速流入（+{SECTOR_ACCEL_BONUS}）")
+    sec_bonus, sec_notes = _sector_bonus(direction, sg_meta.get("side", "mid"),
+                                         sg_meta.get("rank"), sg_meta.get("accel"))
+    bonus += sec_bonus
+    bonus_notes.extend(sec_notes)
 
     # ── 激进模式额外加分项 ────────────────────────────────
     # 【2026-07-21族群3合并】RS>85(跑赢SPY)判断移到下方"动能确认综合指数"，
     # 不再单独在这里加分——它跟VCP/MACD/OBV/资金流向本质是同一族信号。
-    if aggressive_mode:
+    # 【2026-09-29】以下基本面加分（营收加速/CANSLIM A-B级/PEAD/质量因子）
+    # 都是看多证据，只在LONG下生效。SHORT下既不加分也不反向扣分——
+    # "基本面差就做空"是逼空的常见来源，做空规则未经回测前不给基本面任何权重。
+    if aggressive_mode and direction == "LONG":
         # 财报加速（基本面信号，跟"动能确认"族群无关，保留独立）
         rev_growth = info.get("revenueGrowth")
         if rev_growth and float(rev_growth) > 0.25:
@@ -678,31 +678,32 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         if ea.get("ok"):
             cs_score = ea.get("canslim_score", 0)
             grade    = ea.get("overall_grade", "")
-            # CANSLIM A级财报 → 大加分
-            if cs_score >= 80:
-                bonus += 15
-                bonus_notes.append(f"财报A级（CANSLIM{cs_score}分，+15）")
-            elif cs_score >= 60:
-                bonus += 8
-                bonus_notes.append(f"财报B级（CANSLIM{cs_score}分，+8）")
-            # 财报D级 + 方向做多 → 扣分
-            elif cs_score < 40 and direction == "LONG":
-                bonus -= 12
-                bonus_notes.append(f"财报D级（CANSLIM{cs_score}分，-12）")
-
-            # PEAD 信号（财报后漂移）
-            pead = ea.get("pead", {})
-            if pead.get("ok") and pead.get("latest_surprise_pct", 0) > 5:
-                cons = pead.get("pead_consistency", 0)
-                if cons > 60:
+            if direction == "LONG":
+                # CANSLIM A级财报 → 大加分
+                if cs_score >= 80:
+                    bonus += 15
+                    bonus_notes.append(f"财报A级（CANSLIM{cs_score}分，+15）")
+                elif cs_score >= 60:
                     bonus += 8
-                    bonus_notes.append(f"PEAD做多信号（历史{cons:.0f}%延续率，+8）")
+                    bonus_notes.append(f"财报B级（CANSLIM{cs_score}分，+8）")
+                # 财报D级 + 方向做多 → 扣分
+                elif cs_score < 40:
+                    bonus -= 12
+                    bonus_notes.append(f"财报D级（CANSLIM{cs_score}分，-12）")
 
-            # 质量因子（ROE/毛利率）
-            qual = ea.get("quality_factors", {})
-            if qual.get("ok") and qual.get("quality_grade") == "A":
-                bonus += 5
-                bonus_notes.append("质量因子A级（高ROE+高毛利率，+5）")
+                # PEAD 信号（财报后漂移）
+                pead = ea.get("pead", {})
+                if pead.get("ok") and pead.get("latest_surprise_pct", 0) > 5:
+                    cons = pead.get("pead_consistency", 0)
+                    if cons > 60:
+                        bonus += 8
+                        bonus_notes.append(f"PEAD做多信号（历史{cons:.0f}%延续率，+8）")
+
+                # 质量因子（ROE/毛利率）
+                qual = ea.get("quality_factors", {})
+                if qual.get("ok") and qual.get("quality_grade") == "A":
+                    bonus += 5
+                    bonus_notes.append("质量因子A级（高ROE+高毛利率，+5）")
 
             gates["earnings_quality"] = {
                 "pass": cs_score >= 40 or direction == "SHORT",
@@ -714,7 +715,7 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # ── 宏观过滤（FOMC/CPI/传导链）─────────────────────────
     try:
         from .macro_filter import macro_gate_check
-        macro = macro_gate_check(ticker)
+        macro = macro_gate_check(ticker, direction)
         if macro.get("block"):
             return {
                 "verdict": "ABORT",
@@ -735,11 +736,15 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # 智能资金/期权流向这一族信号的驱动机制不同，继续保留为独立加分项。
     try:
         from .smart_money import detect_short_squeeze
-        if direction == "LONG":
-            sqz = detect_short_squeeze(ticker)
-            if sqz.get("ok") and sqz.get("squeeze_score", 0) >= 60:
+        sqz = detect_short_squeeze(ticker)
+        if sqz.get("ok") and sqz.get("squeeze_score", 0) >= 60:
+            if direction == "LONG":
                 bonus += SQUEEZE_BONUS
                 bonus_notes.append(f"逼空潜力高（空仓{sqz['short_float_pct']}%，+{SQUEEZE_BONUS}）")
+            else:
+                # 同一个信号对做空方是风险：空仓拥挤时做空容易被挤
+                bonus -= SQUEEZE_BONUS
+                bonus_notes.append(f"逼空风险高（空仓{sqz['short_float_pct']}%，-{SQUEEZE_BONUS}）")
     except Exception:
         pass
 
@@ -761,23 +766,11 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
     # 之前"加分"的语义一致），负值走gate warn（只扣一次，不再重复扣分）。
     # 每一项无论正负都记note，且note里带上具体加减分——避免"净分是负的，
     # 但列表里混进一条其实是正面的信号"这种读起来自相矛盾的情况。
-    conviction = 0
-    conviction_notes = []
-
-    def _conv(delta: int, label: str):
-        nonlocal conviction
-        conviction += delta
-        conviction_notes.append(f"{label}({delta:+d})")
-
     vcp = _check_vcp_contraction(hist_1y)
-    _conv(2, "VCP波动收缩确认") if vcp["contracted"] else _conv(-1, "VCP未收缩")
-
     macd_conv = _check_macd_momentum(close, direction)
-    _conv(1, "MACD动能健康") if macd_conv["pass"] is True else _conv(-2, "MACD动能恶化")
-
     vp_conv = _check_volume_price_divergence(close, vol, direction)
-    _conv(1, "量价(OBV)配合") if vp_conv["pass"] is True else _conv(-2, "量价背离(OBV)")
 
+    outperform = None
     if aggressive_mode:
         try:
             ret_3m = float((close.iloc[-1] - close.iloc[-63]) / close.iloc[-63]) if len(close) >= 63 else 0
@@ -785,33 +778,20 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
             spy_3m = float((spy_hist_rs["Close"].iloc[-1] - spy_hist_rs["Close"].iloc[-63])
                            / spy_hist_rs["Close"].iloc[-63]) if len(spy_hist_rs) >= 63 else 0
             outperform = ret_3m - spy_3m
-            if outperform > 0.15:
-                _conv(3, f"跑赢SPY{outperform*100:.0f}%")
-            elif outperform > 0.05:
-                _conv(1, f"跑赢SPY{outperform*100:.0f}%")
-            elif outperform < -0.05:
-                _conv(-1, f"跑输SPY{abs(outperform)*100:.0f}%")
         except Exception:
             pass
 
+    uoa, smf = {}, {}
     try:
         from .smart_money import detect_unusual_options, smart_money_flow
         # 期权流向（v2）：bid/ask位置推断主动买方方向，比纯Vol/OI更可信但仍是弱信号
         uoa = detect_unusual_options(ticker)
-        if uoa.get("ok"):
-            if uoa.get("bias") == "bullish" and abs(uoa.get("net_call_flow", 0)) > 300:
-                _conv(1, f"期权Call主导(净{uoa.get('net_call_flow',0):+.0f}手)")
-            elif uoa.get("bias") == "bearish" and direction == "LONG":
-                _conv(-1, f"期权Put主导(净{uoa.get('net_put_flow',0):+.0f}手)")
-
         smf = smart_money_flow(ticker)
-        closing = smf.get("is_closing_window")
-        if smf.get("ok") and smf.get("smf_bias") == "bullish":
-            _conv(2, "机构尾盘买入" if closing else "近60分钟资金净流入")
-        elif smf.get("ok") and smf.get("smf_bias") == "bearish" and direction == "LONG":
-            _conv(-2, "机构尾盘出货" if closing else "近60分钟资金净流出")
     except Exception:
         pass  # 智能资金模块失败不影响主流程
+
+    conviction, conviction_notes = _momentum_conviction(
+        direction, vcp["contracted"], macd_conv["pass"], vp_conv["pass"], outperform, uoa, smf)
 
     # 注意：本指数在 hard_fail / score 计算之后才拿到完整数据（依赖智能资金/
     # 期权模块的异步查询），跟earnings_quality/宏观扣分是同一处境——不能指望
@@ -1055,6 +1035,102 @@ def scan_tickers(tickers: list, portfolio: float = 100_000,
 
 
 # ── 辅助函数 ─────────────────────────────────────────────────
+
+# 【2026-09-29】SHORT方向加分项修正：此前板块/营收/期权流向/资金流向等看多
+# 信号在SHORT下照样加分，看空信号反而只在LONG下计入，导致同一时刻ASTS的
+# SHORT分数(89)高于LONG(74)。下面三个函数把"按方向记分"集中到一处，
+# LONG行为与修改前完全一致。
+
+def _sector_side(sector_g: dict) -> str:
+    """板块位置：top=前3名顺风，bottom=后N名（check_sector_gate返回warn），mid=中性/未知。"""
+    rank = sector_g.get("rank")
+    if sector_g.get("pass") == "warn":
+        return "bottom"
+    if sector_g.get("pass") is True and isinstance(rank, int) and rank <= 3:
+        return "top"
+    return "mid"
+
+
+def _sector_gate_for_direction(sector_g: dict, direction: str) -> dict:
+    """check_sector_gate按做多口径写结论，SHORT下强弱板块的pass/warn对调。"""
+    if direction == "LONG":
+        return {"pass": sector_g["pass"], "note": sector_g["note"]}
+    side = _sector_side(sector_g)
+    head = sector_g["note"].rsplit(" — ", 1)[0]
+    if side == "top":
+        return {"pass": "warn", "note": f"{head} — 强势板块，逆势做空"}
+    if side == "bottom":
+        return {"pass": True, "note": f"{head} — 弱势板块，顺势做空"}
+    return {"pass": sector_g["pass"], "note": sector_g["note"]}
+
+
+def _sector_bonus(direction: str, side: str, rank, accel) -> tuple:
+    """板块加分：LONG前3名+5（加速流入再+3）；SHORT后N名+5，加速流入不适用。"""
+    if direction == "LONG" and side == "top":
+        notes = [f"顺风板块前{rank}名（+{SECTOR_TOP_BONUS}）"]
+        if accel:
+            notes.append(f"板块资金加速流入（+{SECTOR_ACCEL_BONUS}）")
+            return SECTOR_TOP_BONUS + SECTOR_ACCEL_BONUS, notes
+        return SECTOR_TOP_BONUS, notes
+    if direction == "SHORT" and side == "bottom":
+        return SECTOR_TOP_BONUS, [f"弱势板块第{rank}名，顺势做空（+{SECTOR_TOP_BONUS}）"]
+    return 0, []
+
+
+def _momentum_conviction(direction: str, vcp_contracted: bool, macd_pass, vp_pass,
+                         outperform, uoa: dict, smf: dict) -> tuple:
+    """
+    动能确认综合指数的记分（纯函数）。返回 (conviction, notes)。
+    macd_pass / vp_pass 来自已按方向判断的 _check_macd_momentum /
+    _check_volume_price_divergence。VCP是做多突破形态，SHORT下不计。
+    相对强度、期权流向、资金流向在SHORT下符号取反。
+    """
+    long = direction == "LONG"
+    sign = 1 if long else -1
+    conviction = 0
+    notes = []
+
+    def _conv(delta: int, label: str):
+        nonlocal conviction
+        conviction += delta
+        notes.append(f"{label}({delta:+d})")
+
+    if long:
+        _conv(2, "VCP波动收缩确认") if vcp_contracted else _conv(-1, "VCP未收缩")
+
+    _conv(1, "MACD动能健康") if macd_pass is True else _conv(-2, "MACD动能恶化")
+    _conv(1, "量价(OBV)配合") if vp_pass is True else _conv(-2, "量价背离(OBV)")
+
+    if outperform is not None:
+        rs_label = (f"跑赢SPY{outperform*100:.0f}%" if outperform > 0
+                    else f"跑输SPY{abs(outperform)*100:.0f}%")
+        edge = outperform * sign
+        if edge > 0.15:
+            _conv(3, rs_label)
+        elif edge > 0.05:
+            _conv(1, rs_label)
+        elif edge < -0.05:
+            _conv(-1, rs_label)
+
+    uoa = uoa or {}
+    if uoa.get("ok"):
+        call_flow = uoa.get("net_call_flow", 0)
+        put_flow = uoa.get("net_put_flow", 0)
+        if uoa.get("bias") == "bullish" and abs(call_flow) > 300:
+            _conv(sign, f"期权Call主导(净{call_flow:+.0f}手)")
+        elif uoa.get("bias") == "bearish" and (long or abs(put_flow) > 300):
+            _conv(-sign, f"期权Put主导(净{put_flow:+.0f}手)")
+
+    smf = smf or {}
+    if smf.get("ok"):
+        closing = smf.get("is_closing_window")
+        if smf.get("smf_bias") == "bullish":
+            _conv(2 * sign, "机构尾盘买入" if closing else "近60分钟资金净流入")
+        elif smf.get("smf_bias") == "bearish":
+            _conv(-2 * sign, "机构尾盘出货" if closing else "近60分钟资金净流出")
+
+    return conviction, notes
+
 
 def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
