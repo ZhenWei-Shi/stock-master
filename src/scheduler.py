@@ -7,12 +7,11 @@
 
 交易日程（美东时间 ET）：
   09:00  宏观快照    — 生成当日宏观否决快照（供全天读取）
-  09:45  开盘扫描    — 等开盘15分钟稳定后扫描，避免开盘噪音
+  （09:45开盘扫描、15:30收盘前扫描已于2026-09-30停用，见NINE_GATE_AS_SIGNAL处说明）
   10:00/11:00/12:00/13:00/14:05/15:00
          盘中加密检查 — 刷新宏观快照 + 检查止损/目标是否触发
          （2026-07 修复：原来只在12:00查一次，间隔太长导致止损滑点过大）
   14:00  13D/G 午后监控
-  15:30  收盘前扫描  — 下一交易日候选名单
   16:05  每日报告    — 生成 P&L 报告，更新 Kelly 参数
 
 数据成本：
@@ -55,6 +54,9 @@ _CONFIG_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "scheduler_
 # stock-master/overview"核心策略诊断"）。False时09:45/15:30扫描只记录scan_log，
 # 不根据GO自动开模拟仓、不推送GO/高分否决提醒；已有持仓仍由monitor_cycle管理止损。
 # 开仓前的风控检查改用 src/risk_layer.py。
+# 2026-09-30用户决定停掉09:45/15:30定时扫描：九关技术面之外的部分评估后也无可测价值
+# （PR#31），扫描结果没有下游使用者；风控层由各策略开仓前按需调用，不依赖扫描。
+# full_scan_cycle保留给命令行手动运行。
 NINE_GATE_AS_SIGNAL = False
 
 # 高分但被硬门否决的可见性阈值（仅推送提示，不触发任何交易/评分逻辑）。
@@ -535,11 +537,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
     """
     主调度循环。每分钟检查是否到了预定时间。
 
-    美东时间计划：
-      09:45 → 开盘扫描
-      12:00 → 午间监控
-      15:30 → 收盘前扫描
-      16:05 → 每日报告
+    美东时间计划见下方SCHEDULE。
     """
     def _latest_watchlist():
         """每次扫描前重新读取 watchlist.txt，支持 Telegram 实时更新。"""
@@ -873,7 +871,6 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
 
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
-        (9,  45): ("morning_scan",    lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (10,  0): ("intraday_check_1", _intraday_check),
         (11,  0): ("intraday_check_2", _intraday_check),
         (12,  0): ("intraday_check_3", _intraday_check),
@@ -884,7 +881,6 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (15, 40): ("momentum_rebalance", _momentum_rebalance),
         (15, 45): ("overnight_lab",   _overnight_lab),
         (15, 50): ("event_lab",       _event_lab),
-        (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
         (16, 10): ("options_watch",   _options_watch),
         (16, 20): ("failed_breakout_log", _failed_breakout_log),
@@ -908,7 +904,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             f"🤖 <b>TradingAgent 启动</b>\n"
             f"账户：${account:,.0f} | 模式：{mode}\n"
             f"监控股票：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n"
-            f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / 15:30扫描（只记录）/ "
+            f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / "
             f"15:40月度动量（月末）/ 15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / "
             f"16:10期权盯盘 / 16:20假突破记录 / 周五16:30周报"
         )
