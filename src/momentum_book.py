@@ -148,7 +148,7 @@ def rebalance(watchlist: list | None = None, dry_run: bool = False, force: bool 
     held = [p["ticker"] for p in open_pos]
     value = (book.get("account") or {}).get("current_value") or INIT_VALUE
     plan = plan_rebalance(ranked, prices, held, value,
-                          risk_ok=lambda t: risk_check(t, portfolio=value, ignore=RISK_IGNORE)["ok"])
+                          risk_ok=lambda t: risk_ok(risk_check(t, portfolio=value, ignore=RISK_IGNORE)))
 
     actions = []
     if not dry_run:
