@@ -382,6 +382,13 @@ if __name__ == "__main__":
         print(status_line())
         sys.exit(0)
     res = run(dry_run=a.dry_run, allow_open=not a.no_open)
+    # 顺带给动量账本的Alpaca镜像对账（本地-20%止损平仓后Alpaca跟着卖）：放在这个
+    # 每天两次的子进程里，scheduler不用改也不用常驻alpaca-py
+    try:
+        from .momentum_book import sync_alpaca
+        res["msgs"] += [f"📈 动量账本{x}" for x in sync_alpaca(dry_run=a.dry_run)]
+    except Exception as e:
+        res["msgs"].append(f"❌ 动量账本Alpaca对账失败：{str(e)[:120]}")
     if a.json:
         print(json.dumps(res, ensure_ascii=False))
     else:

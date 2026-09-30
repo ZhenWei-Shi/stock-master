@@ -20,6 +20,10 @@
     激进模式的12%：动量股波动天然偏大，12%会把排名第一的强势股（如9/30的AXTI，13.6%）
     系统性排除；该12%上限仍对其他策略生效
   - 保护性止损：入场价-20%（防单只暴跌），不设止盈，不受10天时间止损约束
+  - Alpaca镜像（2026-09-30起）：本地账本仍是记账和评估的依据；调仓时、以及每个交易日
+    10:30/15:30（借options_auto的子进程，跟上本地-20%止损），把Alpaca模拟账户里的
+    股票持仓同步成本地账本的持仓（多卖少买，零股市价单）。该账户的
+    股票只归本账本使用（期权另由options_auto管理，不受影响）。Alpaca出错不影响本地账本
   - 评估：每月记录"持仓组合 vs 同池等权"的超额收益，12个月后再看；
     12个样本不足以下统计结论，主要看方向和回撤是否可接受
 
@@ -112,6 +116,74 @@ def plan_rebalance(ranked: pd.Series, prices: dict, held: list, book_value: floa
             "shares": {t: fractional_shares(budget, prices[t]) for t in targets if t not in held}}
 
 
+def alpaca_diff(desired: dict, actual: dict) -> tuple:
+    """本地持仓{ticker: 股数} vs Alpaca股票持仓 → (要卖掉的, {要买的: 股数})（纯函数）。
+    两边都有的不动：本地也不调整已有持仓的权重。"""
+    return sorted(t for t in actual if t not in desired),         {t: q for t, q in sorted(desired.items()) if t not in actual}
+
+
+def _alpaca_buy(client, t: str, q: float) -> str:
+    """市价买入q股；零股被拒（小盘股常不支持零股）且≥1股时退回整数股。返回说明。"""
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest
+
+    def submit(qty):
+        o = client.submit_order(MarketOrderRequest(symbol=t, qty=qty, side=OrderSide.BUY,
+                                                   time_in_force=TimeInForce.DAY))
+        return getattr(o.status, "value", o.status)
+    try:
+        return f"Alpaca：买入{t} {q:g}股已提交（{submit(q)}）"
+    except Exception as e:
+        whole = math.floor(q)
+        if whole < 1 or whole == q:
+            return f"Alpaca：买入{t}失败：{str(e)[:120]}"
+    try:
+        return f"Alpaca：买入{t} {whole}股已提交（{submit(float(whole))}；不支持零股，按整数股，与本地账本略有差异）"
+    except Exception as e:
+        return f"Alpaca：买入{t}失败：{str(e)[:120]}"
+
+
+def sync_alpaca(dry_run: bool = False, client=None) -> list:
+    """把Alpaca模拟账户的股票持仓同步成本地动量账本的持仓，返回动作说明。未配置密钥返回[]。"""
+    from . import alpaca_client
+    from .paper_trading import list_positions
+    client = client or alpaca_client.paper_trading_client()
+    if client is None:
+        return []
+
+    def _cls(p):
+        c = getattr(p, "asset_class", None)
+        return str(getattr(c, "value", c))
+    book = list_positions(MODE)
+    if not (book.get("account") or {}).get("initial_value"):
+        return []   # 账本读不到/未开始时不动Alpaca，避免把"读取失败"当成"应该清仓"
+    desired = {p["ticker"]: p["shares"] for p in book.get("open", [])}
+    actual = {p.symbol: float(p.qty) for p in client.get_all_positions() if _cls(p) == "us_equity"}
+    sell, buy = alpaca_diff(desired, actual)
+    # 还有未成交挂单的先跳过（例如半天交易日收盘后提交的市价单），避免重复下单
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+    pending = {o.symbol for o in client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))}
+    out = [f"Alpaca：{t}有未成交挂单，本次不动" for t in sorted(pending & (set(sell) | set(buy)))]
+    sell = [t for t in sell if t not in pending]
+    buy = {t: q for t, q in buy.items() if t not in pending}
+    for t in sell:
+        if dry_run:
+            out.append(f"Alpaca[空跑]：会卖出{t} {actual[t]:g}股")
+            continue
+        try:
+            client.close_position(t)
+            out.append(f"Alpaca：卖出{t} {actual[t]:g}股已提交")
+        except Exception as e:
+            out.append(f"Alpaca：卖出{t}失败：{str(e)[:120]}")
+    for t, q in buy.items():
+        if dry_run:
+            out.append(f"Alpaca[空跑]：会买入{t} {q:g}股")
+            continue
+        out.append(_alpaca_buy(client, t, q))
+    return out
+
+
 def _load_log() -> list:
     try:
         with open(_LOGFILE, "r", encoding="utf-8") as f:
@@ -173,6 +245,10 @@ def rebalance(watchlist: list | None = None, dry_run: bool = False, force: bool 
             r = open_position(t, n, px, stop_loss=round(px * (1 - STOP_PCT), 2), target=round(px * 100, 2),
                               strategy=STRATEGY, mode=MODE)
             actions.append(f"买入{t} {n:g}股@{px:.2f}（${n * px:,.0f}）：{'成功' if r.get('ok') else r.get('error')}")
+        try:
+            actions += sync_alpaca()
+        except Exception as e:
+            actions.append(f"Alpaca同步失败（本地账本不受影响）：{str(e)[:120]}")
 
     top = [(t, round(float(v) * 100, 1)) for t, v in ranked.head(10).items()]
     _append_log({"date": today.isoformat(), "dry_run": dry_run, "book_value": value, "top10": top,
