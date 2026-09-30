@@ -46,6 +46,14 @@ class TestRankAndPlan:
         assert plan["shares"] == {"BIG": 0.7296, "A": 7.8}
         assert ("VETO", "风控否决") in plan["skipped"] and ("NOPX", "无价格") in plan["skipped"]
 
+    def test_risk_ok_uses_own_stop_width(self):
+        assert mb.risk_ok({"ok": True, "stop_pct": 13.6})      # AXTI 9/30：风控层12%会否决
+        assert mb.risk_ok({"ok": True, "stop_pct": 20.0})
+        assert not mb.risk_ok({"ok": True, "stop_pct": 20.5})
+        assert not mb.risk_ok({"ok": True, "stop_pct": None})
+        assert not mb.risk_ok({"ok": False, "stop_pct": 8.0})  # 其他风控否决照常生效
+        assert "stop_distance" in mb.RISK_IGNORE
+
     def test_fractional_shares_never_exceed_budget(self):
         for px in (1069.0, 333.33, 7.77, 0.9999):
             n = mb.fractional_shares(780, px)
@@ -82,7 +90,7 @@ def test_rebalance_end_to_end_with_mocks(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "universe", lambda wl=None: ["UP", "MID", "FLAT", "DOWN"])
     closes = _closes()
     monkeypatch.setattr("yfinance.download", lambda *a, **k: pd.concat({"Close": closes}, axis=1))
-    monkeypatch.setattr("src.risk_layer.risk_check", lambda t, **k: {"ok": True})
+    monkeypatch.setattr("src.risk_layer.risk_check", lambda t, **k: {"ok": True, "stop_pct": 8.0})
 
     r = mb.rebalance(force=True)
     assert r["plan"]["targets"] == ["UP", "MID"]
