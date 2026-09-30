@@ -844,6 +844,21 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[OptionsWatch] 运行失败：{e}")
 
+    def _options_auto(allow_open: bool):
+        """SPY卖put价差（Alpaca模拟账户，规则见src/options_auto.py）：10:30平仓检查+开仓，
+        15:30只做平仓检查。子进程运行，alpaca-py不常驻内存。"""
+        try:
+            from src.options_auto import run_in_subprocess
+            r = run_in_subprocess(allow_open=allow_open)
+            for msg in r["msgs"]:
+                if use_telegram:
+                    send_telegram(msg)
+            print(f"[OptionsAuto] {r['status']}" + (f"；{len(r['msgs'])}条推送" if r["msgs"] else ""))
+        except Exception as e:
+            print(f"[OptionsAuto] 运行失败：{e}")
+            if use_telegram:
+                send_telegram(f"❌ SPY卖put价差检查失败：{str(e)[:200]}")
+
     def _overnight_lab():
         """15:45 H4隔夜放量前向登记（只记录不下单）：先给昨天的记录填今天开盘价，再记今天的信号和对照。"""
         try:
@@ -872,12 +887,14 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
         (10,  0): ("intraday_check_1", _intraday_check),
+        (10, 30): ("options_auto",    lambda: _options_auto(True)),
         (11,  0): ("intraday_check_2", _intraday_check),
         (12,  0): ("intraday_check_3", _intraday_check),
         (13,  0): ("intraday_check_4", _intraday_check),
         (14,  0): ("afternoon_13dg",  _afternoon_13dg),
         (14,  5): ("intraday_check_5", _intraday_check),
         (15,  0): ("intraday_check_6", _intraday_check),
+        (15, 30): ("options_auto_exit", lambda: _options_auto(False)),
         (15, 40): ("momentum_rebalance", _momentum_rebalance),
         (15, 45): ("overnight_lab",   _overnight_lab),
         (15, 50): ("event_lab",       _event_lab),
@@ -904,7 +921,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             f"🤖 <b>TradingAgent 启动</b>\n"
             f"账户：${account:,.0f} | 模式：{mode}\n"
             f"监控股票：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n"
-            f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / "
+            f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / 10:30+15:30 SPY卖put价差 / "
             f"15:40月度动量（月末）/ 15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / "
             f"16:10期权盯盘 / 16:20假突破记录 / 周五16:30周报"
         )
