@@ -22,10 +22,17 @@ CHAIN = [_row(600, 3.10, 3.14, -0.26), _row(598, 2.80, 2.84, -0.205), _row(597, 
 
 
 class TestPickSpread:
-    def test_picks_target_expiry_and_delta_rejects_thin_credit(self):
-        # 35天优先于44天；delta最接近0.20的是598；宽2收入0.24<0.40、宽1收入0.10<0.20 → 不开
+    def test_picks_target_expiry_and_delta(self):
+        # 35天优先于44天；delta最接近0.20的是598；宽2：2.80-2.56=0.24≥0.10 → 开
         p = oa.pick_spread(CHAIN, 650, TODAY, 2000)
-        assert not p["ok"] and "卖598P" in p["note"] and "宽2" in p["note"] and "宽1" in p["note"]
+        assert p["ok"] and p["expiry"] == EXP and p["short_strike"] == 598 and p["width"] == 2.0
+
+    def test_delta20_spread_is_feasible(self):
+        # 2026-09-30 10:30实况：SPY卖738P，宽2收入0.21、宽1收入0.17。原"≥宽度20%"规则全挡，修正后可开
+        # 宽2每张最大亏损$179>账户8%($160) → 退到宽1：收入0.17，最大亏损$83
+        rows = [_row(738, 5.00, 5.04, -0.20), _row(736, 4.75, 4.79, -0.19), _row(737, 4.79, 4.83, -0.195)]
+        p = oa.pick_spread(rows, 780, TODAY, 2000)
+        assert p["ok"] and p["width"] == 1.0 and p["credit"] == 0.17 and p["max_loss"] == 83
 
     def test_credit_and_loss_limits(self):
         rows = [_row(598, 2.80, 2.84, -0.20), _row(596, 2.30, 2.36, -0.17), _row(597, 2.55, 2.58, -0.18)]
@@ -44,9 +51,9 @@ class TestPickSpread:
         assert not p["ok"] and "买卖价差太宽" in p["note"]
 
     def test_no_fitting_width_explains(self):
-        rows = [_row(598, 2.80, 2.84, -0.20), _row(596, 2.60, 2.66, -0.17)]
+        rows = [_row(598, 2.80, 2.84, -0.20), _row(596, 2.74, 2.78, -0.17)]
         p = oa.pick_spread(rows, 650, TODAY, 2000)
-        assert not p["ok"] and "收入" in p["note"] and "没有597" in p["note"]
+        assert not p["ok"] and "收入$0.02<$0.10" in p["note"] and "没有597" in p["note"]
 
     def test_no_expiry_in_window(self):
         assert "30-45" in oa.pick_spread([_row(598, 1, 1.1, -0.2, date(2026, 10, 16))], 650, TODAY, 2000)["note"]
