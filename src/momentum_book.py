@@ -16,6 +16,9 @@
   - 换仓：卖出跌出前N的，买入新进入的；仍在前N的不动（减少换手）
   - 买入前过风控层（risk_layer），忽略财报风控——持有一个月约1/3概率跨财报，
     若按财报禁入会系统性排除近期有财报的股票，让选股带偏；被其他风控否决的顺延下一名
+  - ATR止损宽度用本账本自己的上限MAX_STOP_PCT（20%，与保护性止损一致），不用风控层
+    激进模式的12%：动量股波动天然偏大，12%会把排名第一的强势股（如9/30的AXTI，13.6%）
+    系统性排除；该12%上限仍对其他策略生效
   - 保护性止损：入场价-20%（防单只暴跌），不设止盈，不受10天时间止损约束
   - 评估：每月记录"持仓组合 vs 同池等权"的超额收益，12个月后再看；
     12个样本不足以下统计结论，主要看方向和回撤是否可接受
@@ -44,7 +47,9 @@ N_HOLD = 2
 WEIGHT = 0.39
 LOOKBACK, SKIP = 252, 21
 STOP_PCT = 0.20
-RISK_IGNORE = ("earnings_blackout",)
+# stop_distance由risk_ok()按本账本的MAX_STOP_PCT自行判断，不用风控层的12%
+RISK_IGNORE = ("earnings_blackout", "stop_distance")
+MIN_STOP_PCT, MAX_STOP_PCT = 0.3, 20.0   # 下限同cold_model.MIN_STOP_PCT
 SHARE_DECIMALS = 4
 
 
@@ -52,6 +57,12 @@ def fractional_shares(budget: float, price: float) -> float:
     """按金额折算零股，向下取整到SHARE_DECIMALS位，保证花费不超过预算。"""
     q = 10 ** SHARE_DECIMALS
     return math.floor(budget / price * q) / q
+
+
+def risk_ok(r: dict) -> bool:
+    """风控层结论（已忽略RISK_IGNORE）+本账本的止损宽度上限；stop_pct缺失按否决。"""
+    sp = r.get("stop_pct")
+    return bool(r.get("ok")) and sp is not None and MIN_STOP_PCT <= sp <= MAX_STOP_PCT
 
 
 def universe(watchlist: list | None = None) -> list:

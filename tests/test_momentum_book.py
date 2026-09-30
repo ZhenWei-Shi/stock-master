@@ -90,7 +90,7 @@ def test_rebalance_end_to_end_with_mocks(tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "universe", lambda wl=None: ["UP", "MID", "FLAT", "DOWN"])
     closes = _closes()
     monkeypatch.setattr("yfinance.download", lambda *a, **k: pd.concat({"Close": closes}, axis=1))
-    monkeypatch.setattr("src.risk_layer.risk_check", lambda t, **k: {"ok": True})
+    monkeypatch.setattr("src.risk_layer.risk_check", lambda t, **k: {"ok": True, "stop_pct": 8.0})
 
     r = mb.rebalance(force=True)
     assert r["plan"]["targets"] == ["UP", "MID"]
