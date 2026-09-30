@@ -175,11 +175,12 @@ def pick_spread(rows: list, spot: float, today: date, account_value: float,
         max_loss = round((w - credit) * 100, 2)
         qty = size_qty(max_loss, account_value, buying_power)
         if credit < MIN_CREDIT:
-            tried.append(f"宽{w:g}：收入${credit:.2f}<${MIN_CREDIT:.2f}")
+            tried.append(f"宽{w:g}：收入${credit:.2f}（中间价${mid:.2f}）<${MIN_CREDIT:.2f}")
         elif mid > 0 and credit < round(mid * MIN_FILL_RATIO, 2):
             tried.append(f"宽{w:g}：对手价${credit:.2f}<中间价${mid:.2f}的{MIN_FILL_RATIO:.0%}（买卖价差太宽）")
         elif qty < 1:
-            tried.append(f"宽{w:g}：每张最大亏损${max_loss:.0f}，账户{MAX_LOSS_PCT:.0f}%或购买力不够1张")
+            tried.append(f"宽{w:g}：收入${credit:.2f}（中间价${mid:.2f}），每张最大亏损${max_loss:.0f}，"
+                         f"账户{MAX_LOSS_PCT:.0f}%或购买力不够1张")
         else:
             return {"ok": True, "expiry": expiry, "dte": (expiry - today).days,
                     "short_sym": short["symbol"], "long_sym": long["symbol"],
@@ -450,12 +451,15 @@ def run(dry_run: bool = False, allow_open: bool = True, today: date | None = Non
                 log = _load(_SCAN_LOG)
                 log.append({"date": today.isoformat(), "vix": vix, "rows": [
                     {k: c.get(k) for k in ("underlying", "spot", "rv20", "iv", "iv_rv", "error")}
-                    | {"plan_ok": c["plan"]["ok"]} for c in scan]})
+                    | {"plan_ok": c["plan"]["ok"], "note": c["plan"].get("note")} for c in scan]})
                 _save(log[-750:], _SCAN_LOG)
             ranked = [c for c in rank_scan(scan) if c["underlying"] not in held]
             top = "，".join(f"{c['underlying']} {c['iv_rv']}" for c in
                            sorted((c for c in scan if c.get("iv_rv")), key=lambda c: -c["iv_rv"])[:3])
             notes.append(f"IV/RV前3：{top or '无'}")
+            for c in sorted((c for c in scan if c.get("iv_rv") and not c["plan"]["ok"]),
+                            key=lambda c: -c["iv_rv"])[:3]:
+                notes.append(f"{c['underlying']}不做：{c['plan'].get('note', '')}")
             if "scan" in free_arms:
                 if not ranked:
                     notes.append(f"扫描不开：没有IV/RV≥{MIN_IV_RV:g}且规则可做的ETF")

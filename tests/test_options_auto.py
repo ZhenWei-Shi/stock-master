@@ -54,7 +54,7 @@ class TestPickSpread:
     def test_no_fitting_width_explains(self):
         rows = [_row(598, 2.80, 2.84, -0.20), _row(596, 2.74, 2.78, -0.17)]
         p = oa.pick_spread(rows, 650, TODAY, 2000)
-        assert not p["ok"] and "收入$0.02<$0.10" in p["note"] and "没有597" in p["note"]
+        assert not p["ok"] and "收入$0.02（中间价$0.06）<$0.10" in p["note"] and "没有597" in p["note"]
 
     def test_no_expiry_in_window(self):
         assert "30-45" in oa.pick_spread([_row(598, 1, 1.1, -0.2, date(2026, 10, 16))], 650, TODAY, 2000)["note"]
