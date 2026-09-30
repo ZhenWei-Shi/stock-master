@@ -17,7 +17,7 @@ ETF卖put价差自动开仓（2026-09-30新增，Alpaca模拟账户，前向实�
 规则（开仓前登记，不事后改；改规则要在wiki记录日期和原因）：
   开仓：每个仓位同时最多1笔、每只ETF最多1笔；VIX>VIX_MAX全部不开（跳空风险保护）
         账户里有不是本模块开的期权持仓时不开（避免和人工单混在一起）
-        到期DTE_MIN-DTE_MAX天，取最接近DTE_TARGET的到期日
+        到期DTE_MIN-DTE_MAX天，按离DTE_TARGET由近到远依次尝试，第一个能做的就用
         卖出腿：|delta|在DELTA_MIN-DELTA_MAX之间、最接近DELTA_TARGET
         宽度：在实际存在的行权价里依次取宽度≤$2、≤$1的最宽一档，要求 收入≥MIN_CREDIT（每股），
         且对手价收入≥中间价收入×MIN_FILL_RATIO（买卖价差太宽的不做）
@@ -147,11 +147,26 @@ def pick_spread(rows: list, spot: float, today: date, account_value: float,
     """
     从某只ETF的put期权快照里按规则选价差（纯函数）。
     rows: [{"symbol","expiry","strike","bid","ask","delta"(可为None),"iv"(可选)}]
+    到期日按离DTE_TARGET由近到远依次尝试，第一个能做的就用（2026-09-30起：TLT的11/6
+    在74.5以下直接跳到70，只看一个到期日就整只放弃；个别到期日报价失真时也能换一期）。
     返回 {"ok": True, ...计划} 或 {"ok": False, "note": 原因}。
     """
-    expiry = pick_expiry(rows, today)
-    if expiry is None:
+    exps = sorted({r["expiry"] for r in rows if DTE_MIN <= (r["expiry"] - today).days <= DTE_MAX},
+                  key=lambda e: (abs((e - today).days - DTE_TARGET), e))
+    if not exps:
         return {"ok": False, "note": f"没有{DTE_MIN}-{DTE_MAX}天到期的合约"}
+    notes = []
+    for expiry in exps:
+        p = _pick_for_expiry(rows, expiry, spot, today, account_value, buying_power)
+        if p["ok"]:
+            return p
+        notes.append(f"{expiry:%m-%d}：{p['note']}" if len(exps) > 1 else p["note"])
+    return {"ok": False, "note": "；".join(notes[:3]) + (f"；另{len(notes) - 3}个到期日也不行" if len(notes) > 3 else "")}
+
+
+def _pick_for_expiry(rows: list, expiry: date, spot: float, today: date, account_value: float,
+                     buying_power: float | None) -> dict:
+    """在指定到期日里选卖出腿和宽度（纯函数）。"""
     t = (expiry - today).days / 365
     by_strike = {r["strike"]: r for r in rows if r["expiry"] == expiry}
 
