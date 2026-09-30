@@ -15,16 +15,15 @@
   time_window       开盘/收盘缓冲、已收盘
   vix               VIX恐慌
   macro_breadth     跨资产risk-off（只警示）
-  宏观否决          FOMC/CPI/非农当天（cold_decision提前返回）
+  macro_event       FOMC/CPI/非农当天（2026-09-30起只警示，原为否决：回测无可测价值）
 
 不再使用的信号类检查：trend、rsi、volume、vwap、near_high、momentum_conviction、
 sector_rotation、earnings_quality、score/bonus。
 """
 RISK_GATES = ("stop_distance", "earnings_blackout", "debt_event", "news_event",
-              "pdt_rule", "time_window", "vix", "macro_breadth")
+              "pdt_rule", "time_window", "vix", "macro_breadth", "macro_event")
 SIGNAL_GATES = ("trend", "rsi", "volume", "vwap", "near_high", "momentum_conviction",
                 "sector_rotation", "earnings_quality")
-MACRO_VETO_PREFIX = "宏观否决"
 
 
 def evaluate(cold: dict, ignore: tuple = ()) -> dict:
@@ -33,9 +32,6 @@ def evaluate(cold: dict, ignore: tuple = ()) -> dict:
     ignore：本策略有意承担的风险，例如财报事件策略传("earnings_blackout",)。
     """
     vetoes, warnings, notes = [], [], {}
-    if str(cold.get("reason", "")).startswith(MACRO_VETO_PREFIX):
-        vetoes.append("macro")
-        notes["macro"] = cold["reason"]
     gates = cold.get("gates") or {}
     for g in RISK_GATES:
         if g in ignore or g not in gates:

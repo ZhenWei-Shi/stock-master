@@ -719,15 +719,15 @@ def cold_decision(ticker: str, portfolio: float = 100_000,
         pass
 
     # ── 宏观过滤（FOMC/CPI/传导链）─────────────────────────
+    # 2026-09-30用户决定：宏观事件日从"否决"降为"警示"。回测（backtest_research macro）
+    # 否决日入场454笔+0.83% vs 其他906笔+0.49%，t=0.8，风险也相同——只是拦掉1/3机会；
+    # 而且月末碰上事件日会让动量账本整月不调仓。这里在hard_fail/score算完之后写入，
+    # 只作为warn gate给risk_layer列出警示，不影响verdict和分数。
     try:
         from .macro_filter import macro_gate_check
         macro = macro_gate_check(ticker, direction)
         if macro.get("block"):
-            return {
-                "verdict": "ABORT",
-                "reason":  f"宏观否决：{macro['reason']}",
-                "score": 0, "gates": gates, "entry_plan": None,
-            }
+            gates["macro_event"] = {"pass": "warn", "note": f"宏观事件日：{macro['reason']}"}
         if macro.get("penalty", 0) > 0:
             bonus -= macro["penalty"]
             bonus_notes.append(f"宏观扣分：{macro['reason']}（-{macro['penalty']}）")

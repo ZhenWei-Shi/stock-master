@@ -7,8 +7,10 @@
 以独立的模拟账本前向运行，与原模拟盘（九关时代）分开记账。
 
 规则（事先定好）：
-  - 股票池：watchlist + 板块代表股（与回测一致），去掉ETF；只选"买得起"的：
-    股价 ≤ 账本净值×单仓权重（整数股，至少能买1股）
+  - 股票池：watchlist + 板块代表股（与回测一致），去掉ETF
+  - 零股（2026-09-30起）：按金额买，股数保留4位小数（向下取整）。原先用整数股、
+    只选"股价≤单仓预算"的股票，$2,000账本买不起MU、LITE这类高价股，实际持仓
+    不一定是真正的前两名；Alpaca支持零股，账本按零股记才和将来能下的单一致
   - 每月最后一个交易日15:40：按过去12个月涨幅（跳过最近1个月）排名，持有前N_HOLD只，
     每只目标权重WEIGHT（2只×39%，留出滑点余量，不碰paper_trading的80%总仓位上限）
   - 换仓：卖出跌出前N的，买入新进入的；仍在前N的不动（减少换手）
@@ -21,6 +23,7 @@
 用法：python -m src.momentum_book [--dry-run]
 """
 import json
+import math
 import os
 import sys
 from datetime import date, datetime, timedelta
@@ -42,6 +45,13 @@ WEIGHT = 0.39
 LOOKBACK, SKIP = 252, 21
 STOP_PCT = 0.20
 RISK_IGNORE = ("earnings_blackout",)
+SHARE_DECIMALS = 4
+
+
+def fractional_shares(budget: float, price: float) -> float:
+    """按金额折算零股，向下取整到SHARE_DECIMALS位，保证花费不超过预算。"""
+    q = 10 ** SHARE_DECIMALS
+    return math.floor(budget / price * q) / q
 
 
 def universe(watchlist: list | None = None) -> list:
@@ -70,8 +80,8 @@ def rank_momentum(closes: pd.DataFrame) -> pd.Series:
 def plan_rebalance(ranked: pd.Series, prices: dict, held: list, book_value: float,
                    risk_ok=lambda t: True) -> dict:
     """
-    决定卖什么、买什么（纯函数）。按排名往下找，跳过买不起的和风控否决的，
-    凑够N_HOLD只目标；已持有且仍在目标里的不动。
+    决定卖什么、买什么（纯函数）。按排名往下找，跳过没有价格的和风控否决的，
+    凑够N_HOLD只目标；已持有且仍在目标里的不动。零股，所以不再有"买不起"。
     """
     budget = book_value * WEIGHT
     targets, skipped = [], []
@@ -79,8 +89,8 @@ def plan_rebalance(ranked: pd.Series, prices: dict, held: list, book_value: floa
         if len(targets) >= N_HOLD:
             break
         px = prices.get(t)
-        if px is None or px > budget:
-            skipped.append((t, "买不起" if px else "无价格"))
+        if not px:
+            skipped.append((t, "无价格"))
             continue
         if t not in held and not risk_ok(t):
             skipped.append((t, "风控否决"))
@@ -88,7 +98,7 @@ def plan_rebalance(ranked: pd.Series, prices: dict, held: list, book_value: floa
         targets.append(t)
     return {"targets": targets, "sell": [t for t in held if t not in targets],
             "buy": [t for t in targets if t not in held], "skipped": skipped,
-            "shares": {t: int(budget // prices[t]) for t in targets if t not in held}}
+            "shares": {t: fractional_shares(budget, prices[t]) for t in targets if t not in held}}
 
 
 def _load_log() -> list:
@@ -151,7 +161,7 @@ def rebalance(watchlist: list | None = None, dry_run: bool = False, force: bool 
             px, n = prices[t], plan["shares"][t]
             r = open_position(t, n, px, stop_loss=round(px * (1 - STOP_PCT), 2), target=round(px * 100, 2),
                               strategy=STRATEGY, mode=MODE)
-            actions.append(f"买入{t} {n}股@{px:.2f}：{'成功' if r.get('ok') else r.get('error')}")
+            actions.append(f"买入{t} {n:g}股@{px:.2f}（${n * px:,.0f}）：{'成功' if r.get('ok') else r.get('error')}")
 
     top = [(t, round(float(v) * 100, 1)) for t, v in ranked.head(10).items()]
     _append_log({"date": today.isoformat(), "dry_run": dry_run, "book_value": value, "top10": top,

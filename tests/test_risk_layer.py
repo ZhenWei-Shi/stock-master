@@ -35,9 +35,11 @@ class TestEvaluate:
         assert evaluate(cold)["ok"] is False
         assert evaluate(cold, ignore=("earnings_blackout",))["ok"] is True
 
-    def test_macro_early_return(self):
-        r = evaluate({"verdict": "ABORT", "reason": "宏观否决：今日FOMC决议", "score": 0, "gates": {}})
-        assert r["ok"] is False and r["vetoes"] == ["macro"]
+    def test_macro_event_is_warning_only(self):
+        # 2026-09-30：宏观事件日从否决降为警示
+        r = evaluate(_cold(macro_event={"pass": "warn", "note": "宏观事件日：今日FOMC决议"}))
+        assert r["ok"] is True and r["warnings"] == ["macro_event"]
+        assert "FOMC" in r["notes"]["macro_event"]
 
     def test_format(self):
         text = format_risk(evaluate(_cold(debt_event={"pass": False, "note": "7/15发债"})))

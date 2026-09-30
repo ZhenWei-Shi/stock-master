@@ -37,13 +37,19 @@ class TestRankAndPlan:
     def test_rank_needs_history(self):
         assert mb.rank_momentum(_closes(100)).empty
 
-    def test_plan_skips_unaffordable_and_vetoed(self):
-        ranked = pd.Series([0.9, 0.8, 0.7, 0.6], index=["BIG", "VETO", "A", "B"])
-        prices = {"BIG": 1069.0, "VETO": 50.0, "A": 100.0, "B": 200.0}
+    def test_plan_fractional_buys_expensive_and_skips_vetoed(self):
+        ranked = pd.Series([0.9, 0.8, 0.7, 0.6], index=["BIG", "VETO", "NOPX", "A"])
+        prices = {"BIG": 1069.0, "VETO": 50.0, "A": 100.0}
         plan = mb.plan_rebalance(ranked, prices, held=[], book_value=2000, risk_ok=lambda t: t != "VETO")
-        # 单仓预算=2000×39%=780：BIG买不起，VETO被风控否决
-        assert plan["targets"] == ["A", "B"] and plan["shares"] == {"A": 7, "B": 3}
-        assert ("BIG", "买不起") in plan["skipped"] and ("VETO", "风控否决") in plan["skipped"]
+        # 单仓预算=2000×39%=780：零股后BIG（股价>预算）也能买，VETO被风控否决，NOPX无价格
+        assert plan["targets"] == ["BIG", "A"]
+        assert plan["shares"] == {"BIG": 0.7296, "A": 7.8}
+        assert ("VETO", "风控否决") in plan["skipped"] and ("NOPX", "无价格") in plan["skipped"]
+
+    def test_fractional_shares_never_exceed_budget(self):
+        for px in (1069.0, 333.33, 7.77, 0.9999):
+            n = mb.fractional_shares(780, px)
+            assert n * px <= 780 and 780 - n * px < px * 1e-4 + 1e-9
 
     def test_plan_keeps_holdings_still_in_top(self):
         ranked = pd.Series([0.9, 0.8, 0.7], index=["A", "C", "B"])
@@ -96,4 +102,15 @@ def test_two_positions_at_weight_limit_fit_exposure_cap(tmp_path, monkeypatch):
     pt.init_account(2000, mode="momentum")
     for t in ("A", "B"):
         r = pt.open_position(t, 10, 78.0, stop_loss=62.4, target=7800, strategy="Momentum/Monthly", mode="momentum")
+        assert r["ok"], r
+
+
+def test_fractional_positions_at_weight_limit_fit_exposure_cap(tmp_path, monkeypatch):
+    # 零股：高价股按金额买满39%，两只加滑点后仍须低于80%上限
+    monkeypatch.setattr(pt, "_MOM", str(tmp_path / "mom.json"))
+    pt.init_account(2000, mode="momentum")
+    for t, px in (("MU", 1069.0), ("LITE", 333.33)):
+        n = mb.fractional_shares(2000 * mb.WEIGHT, px)
+        r = pt.open_position(t, n, px, stop_loss=round(px * 0.8, 2), target=px * 100,
+                             strategy="Momentum/Monthly", mode="momentum")
         assert r["ok"], r
