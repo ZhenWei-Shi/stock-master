@@ -19,8 +19,11 @@ ETF卖put价差自动开仓（2026-09-30新增，Alpaca模拟账户，前向实�
         账户里有不是本模块开的期权持仓时不开（避免和人工单混在一起）
         到期DTE_MIN-DTE_MAX天，取最接近DTE_TARGET的到期日
         卖出腿：|delta|在DELTA_MIN-DELTA_MAX之间、最接近DELTA_TARGET
-        宽度按WIDTHS依次尝试，要求 收入≥宽度×MIN_CREDIT_RATIO，
+        宽度按WIDTHS依次尝试，要求 收入≥MIN_CREDIT（每股），
         且对手价收入≥中间价收入×MIN_FILL_RATIO（买卖价差太宽的不做）
+        （2026-09-30首次运行前修正：原规则"收入≥宽度20%"与"卖delta 0.20"数学上几乎
+        不可能同时满足——窄价差的 收入/宽度 ≈ 卖出腿|delta|，按对手价还更低，
+        当天10:30 SPY和全部ETF都被它挡掉。优势来自IV>RV，不来自收入占宽度比例）
         张数 = floor(账户价值×8% ÷ 每张最大亏损)，再受期权购买力限制；
         账户涨了自动多开、跌了自动少开，不足1张就不开
         限价 = 对手价收入（卖出腿bid − 买入腿ask），与options-log规则4口径一致
@@ -57,7 +60,7 @@ SCAN_UNIVERSE = ("QQQ", "IWM", "DIA", "XLF", "XLE", "XLK", "XLV", "GLD", "TLT")
 DTE_MIN, DTE_MAX, DTE_TARGET = 30, 45, 35
 DELTA_MIN, DELTA_MAX, DELTA_TARGET = 0.15, 0.25, 0.20
 WIDTHS = (2.0, 1.0)
-MIN_CREDIT_RATIO = 0.20
+MIN_CREDIT = 0.10          # 每股最低收入，太少覆盖不了费用
 MIN_FILL_RATIO = 0.70
 MIN_IV_RV = 1.0
 TAKE_PROFIT = 0.50
@@ -171,8 +174,8 @@ def pick_spread(rows: list, spot: float, today: date, account_value: float,
         mid = (short["bid"] + short["ask"]) / 2 - (long["bid"] + long["ask"]) / 2
         max_loss = round((w - credit) * 100, 2)
         qty = size_qty(max_loss, account_value, buying_power)
-        if credit < round(w * MIN_CREDIT_RATIO, 2):
-            tried.append(f"宽{w:g}：收入${credit:.2f}<宽度{MIN_CREDIT_RATIO:.0%}")
+        if credit < MIN_CREDIT:
+            tried.append(f"宽{w:g}：收入${credit:.2f}<${MIN_CREDIT:.2f}")
         elif mid > 0 and credit < round(mid * MIN_FILL_RATIO, 2):
             tried.append(f"宽{w:g}：对手价${credit:.2f}<中间价${mid:.2f}的{MIN_FILL_RATIO:.0%}（买卖价差太宽）")
         elif qty < 1:
