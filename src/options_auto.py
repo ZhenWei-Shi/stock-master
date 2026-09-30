@@ -19,12 +19,12 @@ ETF卖put价差自动开仓（2026-09-30新增，Alpaca模拟账户，前向实�
         账户里有不是本模块开的期权持仓时不开（避免和人工单混在一起）
         到期DTE_MIN-DTE_MAX天，取最接近DTE_TARGET的到期日
         卖出腿：|delta|在DELTA_MIN-DELTA_MAX之间、最接近DELTA_TARGET
-        宽度按WIDTHS依次尝试，要求 收入≥MIN_CREDIT（每股），
+        宽度：在实际存在的行权价里依次取宽度≤$2、≤$1的最宽一档，要求 收入≥MIN_CREDIT（每股），
         且对手价收入≥中间价收入×MIN_FILL_RATIO（买卖价差太宽的不做）
         （2026-09-30首次运行前修正：原规则"收入≥宽度20%"与"卖delta 0.20"数学上几乎
         不可能同时满足——窄价差的 收入/宽度 ≈ 卖出腿|delta|，按对手价还更低，
         当天10:30 SPY和全部ETF都被它挡掉。优势来自IV>RV，不来自收入占宽度比例）
-        张数 = floor(账户价值×8% ÷ 每张最大亏损)，再受期权购买力限制；
+        张数 = floor(账户价值×10% ÷ 每张最大亏损)，再受期权购买力限制（9/30由8%放到10%）；
         账户涨了自动多开、跌了自动少开，不足1张就不开
         限价 = 对手价收入（卖出腿bid − 买入腿ask），与options-log规则4口径一致
   平仓（每次检查按对手价 = 卖出腿ask − 买入腿bid 估算平仓成本）：
@@ -48,7 +48,7 @@ from datetime import date, datetime, timedelta
 import pytz
 
 from . import alpaca_client
-from .alpaca_options import MAX_LOSS_PCT, open_option_positions
+from .alpaca_options import open_option_positions
 
 ET = pytz.timezone("America/New_York")
 _DATA = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -62,6 +62,10 @@ DELTA_MIN, DELTA_MAX, DELTA_TARGET = 0.15, 0.25, 0.20
 WIDTHS = (2.0, 1.0)
 MIN_CREDIT = 0.10          # 每股最低收入，太少覆盖不了费用
 MIN_FILL_RATIO = 0.70
+# 2026-09-30用户决定：自动卖put价差单笔上限从8%放到10%。$2,000账户下delta 0.20的$2宽
+# 价差每张亏损约$170-180，8%($160)一张都放不下；$1宽收入太少、摩擦占比太大。
+# 两个仓位合计最多约20%。手动下单工具alpaca_options仍是8%
+OPT_MAX_LOSS_PCT = 10.0
 MIN_IV_RV = 1.0
 TAKE_PROFIT = 0.50
 STOP_MULT = 3.0
@@ -129,10 +133,10 @@ def atm_iv(rows: list, spot: float, expiry: date, today: date) -> float | None:
 
 
 def size_qty(max_loss_per: float, account_value: float, buying_power: float | None) -> int:
-    """张数 = floor(账户8% ÷ 每张最大亏损)，再受期权购买力限制（纯函数）。"""
+    """张数 = floor(账户OPT_MAX_LOSS_PCT ÷ 每张最大亏损)，再受期权购买力限制（纯函数）。"""
     if max_loss_per <= 0:
         return 0
-    q = math.floor(account_value * MAX_LOSS_PCT / 100 / max_loss_per + 1e-9)
+    q = math.floor(account_value * OPT_MAX_LOSS_PCT / 100 / max_loss_per + 1e-9)
     if buying_power is not None:
         q = min(q, math.floor(buying_power / max_loss_per + 1e-9))
     return max(q, 0)
@@ -164,12 +168,20 @@ def pick_spread(rows: list, spot: float, today: date, account_value: float,
         return {"ok": False, "note": f"{expiry}没有|delta|在{DELTA_MIN}-{DELTA_MAX}的put"}
     _, short, delta = min(cands, key=lambda c: c[0])
 
-    tried = []
-    for w in WIDTHS:
-        long = by_strike.get(round(short["strike"] - w, 2))
-        if not long or not long["ask"]:
-            tried.append(f"宽{w:g}：没有{short['strike'] - w:g}行权价")
+    tried, seen = [], set()
+    for max_w in WIDTHS:
+        # 行权价间隔各ETF不同（如TLT在74.5附近没有72.5/73.5），在实际存在的行权价里
+        # 取宽度不超过max_w的最宽一档
+        lows = [k for k, r in by_strike.items()
+                if k < short["strike"] and short["strike"] - k <= max_w + 1e-9 and r["ask"]]
+        if not lows:
+            tried.append(f"宽≤{max_w:g}：{short['strike']:g}下方没有可用行权价")
             continue
+        long = by_strike[min(lows)]
+        w = round(short["strike"] - long["strike"], 2)
+        if w in seen:
+            continue
+        seen.add(w)
         credit = round(short["bid"] - long["ask"], 2)
         mid = (short["bid"] + short["ask"]) / 2 - (long["bid"] + long["ask"]) / 2
         max_loss = round((w - credit) * 100, 2)
@@ -180,7 +192,7 @@ def pick_spread(rows: list, spot: float, today: date, account_value: float,
             tried.append(f"宽{w:g}：对手价${credit:.2f}<中间价${mid:.2f}的{MIN_FILL_RATIO:.0%}（买卖价差太宽）")
         elif qty < 1:
             tried.append(f"宽{w:g}：收入${credit:.2f}（中间价${mid:.2f}），每张最大亏损${max_loss:.0f}，"
-                         f"账户{MAX_LOSS_PCT:.0f}%或购买力不够1张")
+                         f"账户{OPT_MAX_LOSS_PCT:.0f}%或购买力不够1张")
         else:
             return {"ok": True, "expiry": expiry, "dte": (expiry - today).days,
                     "short_sym": short["symbol"], "long_sym": long["symbol"],
