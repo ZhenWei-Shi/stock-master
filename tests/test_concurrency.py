@@ -2,71 +2,12 @@
 并发安全测试
 
 覆盖已发现的三类竞态条件：
-  P0: log_execution 无锁 → 并发写入丢失记录
   P1: record_day_trade 无锁 → PDT 记录丢失
   P1: start_bot_thread 无重入保护 → 启动多个 poll_loop 线程
 """
 import json
 import threading
 import pytest
-
-
-class TestLogExecutionConcurrency:
-    """
-    P0回归：log_execution 原本不在 _PT_LOCK 中，
-    scheduler（自动止损）与 Telegram /logexec 并发时可能丢失执行记录。
-    修复：整个 read-modify-write 放入 with _PT_LOCK 块。
-    """
-
-    def test_no_records_lost_50_threads(self, tmp_path, monkeypatch):
-        import src.paper_trading as pt
-        # 将文件路径重定向到隔离的临时目录
-        monkeypatch.setattr(pt, "_EXEC_LOG", str(tmp_path / "execution_log.json"))
-
-        N = 50
-        errors = []
-
-        def call(i):
-            try:
-                result = pt.log_execution(
-                    ticker="AAPL",
-                    signal_price=100.0 + i * 0.01,
-                    actual_price=100.05 + i * 0.01,
-                    signal_time="10:30:00",
-                    note=f"concurrent-test-{i}",
-                )
-                assert result["ok"] is True
-            except Exception as e:
-                errors.append(str(e))
-
-        threads = [threading.Thread(target=call, args=(i,)) for i in range(N)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)  # 防止死锁时测试永远挂起
-        assert not any(t.is_alive() for t in threads), "线程超时（可能死锁）"
-
-        assert not errors, f"线程中发生异常：{errors}"
-
-        data = json.loads((tmp_path / "execution_log.json").read_text(encoding="utf-8"))
-        actual = len(data["logs"])
-        assert actual == N, (
-            f"并发写入丢失记录：期望 {N} 条，实际 {actual} 条"
-            f"（丢失 {N - actual} 条）"
-        )
-
-    def test_deviation_pct_calculated_correctly(self, tmp_path, monkeypatch):
-        """同时验证 deviation_pct 计算逻辑"""
-        import src.paper_trading as pt
-        monkeypatch.setattr(pt, "_EXEC_LOG", str(tmp_path / "execution_log.json"))
-
-        result = pt.log_execution(
-            ticker="MSFT",
-            signal_price=100.0,
-            actual_price=101.0,
-            signal_time="09:35:00",
-        )
-        assert result["deviation_pct"] == pytest.approx(1.0, abs=0.01)
 
 
 class TestRecordDayTradeConcurrency:

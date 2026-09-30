@@ -6,11 +6,12 @@
   2. pullback   —— 路径B（回调企稳）5年只触发4次，是设计还是bug？拆开各子条件看
   3. short      —— 做空方向的技术面信号有没有优势（决定put信号值不值得继续做）
   4. universe   —— 换一个"2021年热门、之后大跌"的股票池，看结论是否依赖幸存者偏差
+  5. macro      —— 宏观否决（FOMC/CPI/非农前后一天）日入场的交易 vs 其他日子
 
 每个结果都和"同股票、同笔数、同出场规则的随机入场"对照组比较——绝对收益会
 被股票池本身的涨跌带偏，只有相对随机入场的差值才说明信号有没有用。
 
-用法：python -m src.backtest_research [ablation|pullback|short|universe|all]
+用法：python -m src.backtest_research [ablation|pullback|short|universe|macro|all]
 """
 import math
 import sys
@@ -210,6 +211,48 @@ def run_universe(years) -> list:
     return lines
 
 
+# ─────────────────────────────────────────────────────────────
+# 5. 宏观否决（2026-09-30：九关里唯一回测得了的非技术面否决）
+# ─────────────────────────────────────────────────────────────
+
+def macro_event_dates() -> list:
+    """与macro_filter一致：FOMC、CPI用硬编码日历（2025-2026），非农=每月第一个周五。"""
+    from datetime import date, timedelta
+    from .macro_filter import _ALL_FOMC, _ALL_CPI
+    events = {date.fromisoformat(d) for d in _ALL_FOMC | _ALL_CPI}
+    for y in (2025, 2026):
+        for m in range(1, 13):
+            first = date(y, m, 1)
+            events.add(first + timedelta(days=(4 - first.weekday()) % 7))
+    return sorted(events)
+
+
+def macro_blocked(day, events: list) -> bool:
+    """与get_economic_calendar一致：事件是昨天、今天或明天（日历日）就整天禁止开新仓（纯函数）。"""
+    return any(-1 <= (e - day).days <= 1 for e in events)
+
+
+def run_macro_veto(prices, earnings, tickers) -> list:
+    events = macro_event_dates()
+    sigs = _all_signals(prices, earnings, tickers, max_fails=0)
+    tr = _trades(prices, sigs)
+    tr = tr[pd.to_datetime(tr["entry_date"]) >= "2025-01-01"].copy()
+    tr["blocked"] = [macro_blocked(pd.Timestamp(d).date(), events) for d in tr["entry_date"]]
+    done = tr[tr["ret_pct"].notna()]
+    lines = [f"== 5. 宏观否决（FOMC/CPI/非农前后一天禁止开新仓），2025-01起技术面GO交易 {len(done)} 笔 =="]
+    for name, sub in (("宏观否决日入场", done[done["blocked"]]), ("其他日子入场", done[~done["blocked"]])):
+        r = sub["ret_pct"]
+        m, se, n = _mean_se(r)
+        lines.append(f"  {name:10s} n={n:4d}  平均{m:+.2f}%(±{1.96 * se:.2f})  胜率{(r > 0).mean() * 100:.0f}%  "
+                     f"波动{r.std():.2f}%  最差5%平均{r[r <= r.quantile(0.05)].mean():+.2f}%")
+    a, b = done[done["blocked"]]["ret_pct"], done[~done["blocked"]]["ret_pct"]
+    if len(a) > 2 and len(b) > 2:
+        d = a.mean() - b.mean()
+        t = d / math.sqrt(a.var() / len(a) + b.var() / len(b))
+        lines.append(f"  否决日 - 其他日：平均收益差{d:+.2f}%（t={t:+.1f}）；否决日占GO信号的{len(a) / len(done) * 100:.0f}%")
+    return lines
+
+
 def main(which: str = "all", years: int = 5):
     tickers = default_universe()
     prices = load_prices(tickers, years)
@@ -223,7 +266,9 @@ def main(which: str = "all", years: int = 5):
     if which in ("short", "all"):
         out += run_short(prices, earnings, tickers) + [""]
     if which in ("universe", "all"):
-        out += run_universe(years)
+        out += run_universe(years) + [""]
+    if which in ("macro", "all"):
+        out += run_macro_veto(prices, earnings, tickers)
     text = "\n".join(out)
     print(text)
     return text

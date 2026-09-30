@@ -68,3 +68,18 @@ class TestIsDue:
         from datetime import datetime
         f = lambda hh, mm: sch.is_due(datetime(2026, 9, 29, hh, mm), 15, 40)
         assert not f(15, 39) and f(15, 40) and f(15, 54) and not f(15, 55)
+
+
+class TestExecutedPersistence:
+    def test_roundtrip_same_day(self, tmp_path):
+        p = str(tmp_path / "ex.json")
+        sch.save_executed("2026-09-30", {"2026-09-30_intraday_check_6", "2026-09-29_old"}, p)
+        assert sch.load_executed("2026-09-30", p) == {"2026-09-30_intraday_check_6"}
+
+    def test_other_day_or_missing_or_corrupt_is_empty(self, tmp_path):
+        p = tmp_path / "ex.json"
+        sch.save_executed("2026-09-29", {"2026-09-29_x"}, str(p))
+        assert sch.load_executed("2026-09-30", str(p)) == set()
+        assert sch.load_executed("2026-09-30", str(tmp_path / "none.json")) == set()
+        p.write_text("{broken", encoding="utf-8")
+        assert sch.load_executed("2026-09-30", str(p)) == set()

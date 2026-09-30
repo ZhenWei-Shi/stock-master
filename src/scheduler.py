@@ -494,6 +494,30 @@ def report_cycle(mode: str = "paper", use_telegram: bool = True):
 CATCHUP_MINUTES = 15   # 任务计划时间后这么多分钟内仍可补跑（超过就当天放弃，避免重启时补跑早盘任务）
 
 
+# "今天已执行"的任务记录写进文件：只放内存的话，重启后新进程会把CATCHUP_MINUTES窗口内
+# 刚跑过的任务再跑一次（2026-09-29 15:11重启时15:00的盘中检查就被补跑了一次；晨报/周报
+# 会因此重复推送）。
+_EXECUTED_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "scheduler_executed.json")
+
+
+def load_executed(date_str: str, path: str = _EXECUTED_FILE) -> set:
+    """读回date_str当天已执行的任务key；文件不存在、损坏或不是今天的，返回空集合。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return set(data.get("keys", [])) if data.get("date") == date_str else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def save_executed(date_str: str, keys: set, path: str = _EXECUTED_FILE):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"date": date_str, "keys": sorted(k for k in keys if k.startswith(date_str))}, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 def is_due(now: datetime, h: int, m: int, catchup: int = CATCHUP_MINUTES) -> bool:
     """now是否落在计划时间(h:m)起catchup分钟的窗口内（纯函数）。"""
     minutes = now.hour * 60 + now.minute
@@ -811,6 +835,17 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         except Exception as e:
             print(f"[EventLab] 运行失败：{e}")
 
+    def _options_watch():
+        """16:10 期权纸上交易盯盘：收盘后按事先写死的规则检查失效/时间止损/到期，触发就记平仓并推送。"""
+        try:
+            from src.options_watch import run_options_watch, status_line
+            for msg in run_options_watch():
+                if use_telegram:
+                    send_telegram(msg)
+            print(f"[OptionsWatch] {status_line()}")
+        except Exception as e:
+            print(f"[OptionsWatch] 运行失败：{e}")
+
     def _overnight_lab():
         """15:45 H4隔夜放量前向登记（只记录不下单）：先给昨天的记录填今天开盘价，再记今天的信号和对照。"""
         try:
@@ -851,11 +886,14 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (15, 50): ("event_lab",       _event_lab),
         (15, 30): ("closing_scan",   lambda: full_scan_cycle(_latest_watchlist(), account, mode, use_telegram)),
         (16,  5): ("daily_report",   lambda: report_cycle(mode, use_telegram)),
+        (16, 10): ("options_watch",   _options_watch),
         (16, 20): ("failed_breakout_log", _failed_breakout_log),
         (16, 30): ("weekly_performance", _weekly_performance),
     }
 
-    executed_today = set()
+    executed_today = load_executed(datetime.now(ET).strftime("%Y-%m-%d"))
+    if executed_today:
+        print(f"[Scheduler] 读回今天已执行的任务{len(executed_today)}个，重启后不会重复执行")
 
     try:
         from src.paper_trading import list_positions
@@ -872,7 +910,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             f"监控股票：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n"
             f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / 15:30扫描（只记录）/ "
             f"15:40月度动量（月末）/ 15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / "
-            f"16:20假突破记录 / 周五16:30周报"
+            f"16:10期权盯盘 / 16:20假突破记录 / 周五16:30周报"
         )
 
     print(f"[Scheduler] Agent 启动，按 Ctrl+C 停止")
@@ -896,6 +934,10 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
                     if key in executed_today or not is_due(now, h, m):
                         continue
                     executed_today.add(key)
+                    try:
+                        save_executed(date_str, executed_today)
+                    except OSError as e:
+                        print(f"[Scheduler] 已执行记录写入失败（不影响运行）：{e}")
                     late = (now.hour, now.minute) != (h, m)
                     print(f"\n[Scheduler] 执行：{label} @ {now.strftime('%H:%M ET')}"
                           + (f"（计划{h:02d}:{m:02d}，补跑）" if late else ""))

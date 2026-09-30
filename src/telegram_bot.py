@@ -277,7 +277,7 @@ def handle_command(text: str):
             "/add NVDA AAPL   添加\n"
             "/remove NVDA     删除\n\n"
             "<b>策略</b>\n"
-            "/events          事件实验室+隔夜放量的进度\n"
+            "/events          事件实验室+隔夜放量+期权纸上交易\n"
             "/perf            模拟盘绩效（回撤/Sharpe/对比SPY）\n"
             "/risk NVDA       风控检查（不是买卖信号）\n\n"
             "<b>期权</b>\n"
@@ -388,7 +388,8 @@ def handle_command(text: str):
         # /events —— 事件实验室进度：各假设样本数/结果、即将到来的财报
         from src.event_lab import summarize
         from src.overnight_lab import summarize as overnight_summary
-        send(summarize() + "\n" + overnight_summary())
+        from src.options_watch import status_line
+        send(summarize() + "\n" + overnight_summary() + "\n" + status_line())
 
     elif cmd == "/risk":
         # /risk NVDA —— 风控层检查（九关2026-09-29降级后只保留风控类gate：止损宽度/
@@ -422,7 +423,7 @@ def handle_command(text: str):
             f"固定自选：{len(wl)} 只\n"
             f"{'股票：' + ', '.join(wl[:5]) + ('...' if len(wl)>5 else '') if wl else '暂无自选股'}\n\n"
             f"定时任务（ET）：09:00晨报 / 10-15点每小时监控 / 15:40月度动量（月末）/ "
-            f"15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / 16:20假突破记录 / 周五16:30周报"
+            f"15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / 16:10期权盯盘 / 16:20假突破记录 / 周五16:30周报"
         )
 
     elif cmd in RETIRED_COMMANDS:
