@@ -23,25 +23,32 @@ CHAIN = [_row(600, 3.10, 3.14, -0.26), _row(598, 2.80, 2.84, -0.205), _row(597, 
 
 class TestPickSpread:
     def test_picks_target_expiry_and_delta(self):
-        # 35天优先于44天；delta最接近0.20的是598；宽2收入0.24但每张亏$176>$160 → 宽1收入0.10
+        # 35天优先于44天；delta最接近0.20的是598；宽2收入0.24，每张亏$176≤账户10%($200)
         p = oa.pick_spread(CHAIN, 650, TODAY, 2000)
         assert p["ok"] and p["expiry"] == EXP and p["short_strike"] == 598
-        assert p["width"] == 1.0 and p["credit"] == 0.10
+        assert p["width"] == 2.0 and p["credit"] == 0.24
 
     def test_delta20_spread_is_feasible(self):
         # 2026-09-30 10:30实况：SPY卖738P，宽2收入0.21、宽1收入0.17。原"≥宽度20%"规则全挡，修正后可开
-        # 宽2每张最大亏损$179>账户8%($160) → 退到宽1：收入0.17，最大亏损$83
+        # 宽2每张最大亏损$179：8%($160)放不下，10%($200)可以
         rows = [_row(738, 5.00, 5.04, -0.20), _row(736, 4.75, 4.79, -0.19), _row(737, 4.79, 4.83, -0.195)]
         p = oa.pick_spread(rows, 780, TODAY, 2000)
-        assert p["ok"] and p["width"] == 1.0 and p["credit"] == 0.17 and p["max_loss"] == 83
+        assert p["ok"] and p["width"] == 2.0 and p["credit"] == 0.21 and p["max_loss"] == 179
+
+    def test_uses_existing_strike_grid(self):
+        # 2026-09-30 TLT实况：卖74.5P，下方只有74/73/72这类整数行权价，没有72.5/73.5
+        rows = [_row(74.5, 1.00, 1.03, -0.20, root="TLT"), _row(74, 0.85, 0.88, -0.17, root="TLT"),
+                _row(73, 0.60, 0.63, -0.14, root="TLT"), _row(72, 0.42, 0.45, -0.10, root="TLT")]
+        p = oa.pick_spread(rows, 80, TODAY, 2000)
+        assert p["ok"] and p["long_strike"] == 73 and p["width"] == 1.5 and p["credit"] == 0.37
 
     def test_credit_and_loss_limits(self):
         rows = [_row(598, 2.80, 2.84, -0.20), _row(596, 2.30, 2.36, -0.17), _row(597, 2.55, 2.58, -0.18)]
         p = oa.pick_spread(rows, 650, TODAY, 2000)
-        # 宽2：收入0.44≥0.40，最大亏损$156≤$160 → 1张
+        # 宽2：收入0.44，最大亏损$156≤账户10%($200) → 1张
         assert p["ok"] and p["width"] == 2.0 and p["credit"] == 0.44 and p["max_loss"] == 156 and p["qty"] == 1
         assert p["short_sym"] == "SPY261104P00598000" and p["long_sym"] == "SPY261104P00596000"
-        # 账户小了 → 宽2一张都放不下，退到宽1：0.22≥0.20，亏损$78
+        # 账户小了（10%=$150）→ 宽2一张都放不下，退到宽1：收入0.22，亏损$78
         p = oa.pick_spread(rows, 650, TODAY, 1500)
         assert p["ok"] and p["width"] == 1.0 and p["credit"] == 0.22
 
@@ -54,7 +61,7 @@ class TestPickSpread:
     def test_no_fitting_width_explains(self):
         rows = [_row(598, 2.80, 2.84, -0.20), _row(596, 2.74, 2.78, -0.17)]
         p = oa.pick_spread(rows, 650, TODAY, 2000)
-        assert not p["ok"] and "收入$0.02（中间价$0.06）<$0.10" in p["note"] and "没有597" in p["note"]
+        assert not p["ok"] and "收入$0.02（中间价$0.06）<$0.10" in p["note"] and "598下方没有可用行权价" in p["note"]
 
     def test_no_expiry_in_window(self):
         assert "30-45" in oa.pick_spread([_row(598, 1, 1.1, -0.2, date(2026, 10, 16))], 650, TODAY, 2000)["note"]
@@ -73,12 +80,12 @@ class TestPickSpread:
 
 def test_qty_scales_with_account_and_buying_power():
     assert oa.size_qty(156, 2000, None) == 1
-    assert oa.size_qty(156, 8000, None) == 4          # 账户涨了多开
+    assert oa.size_qty(156, 8000, None) == 5          # 账户涨了多开（10%=$800）
     assert oa.size_qty(156, 8000, 400) == 2           # 受期权购买力限制
     assert oa.size_qty(156, 1500, None) == 0
     rows = [_row(598, 2.80, 2.84, -0.20), _row(596, 2.30, 2.36, -0.17)]
     p = oa.pick_spread(rows, 650, TODAY, 8000)
-    assert p["qty"] == 4 and p["max_loss"] == 624
+    assert p["qty"] == 5 and p["max_loss"] == 780
 
 
 class TestExit:
