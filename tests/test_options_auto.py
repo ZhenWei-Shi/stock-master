@@ -23,9 +23,10 @@ CHAIN = [_row(600, 3.10, 3.14, -0.26), _row(598, 2.80, 2.84, -0.205), _row(597, 
 
 class TestPickSpread:
     def test_picks_target_expiry_and_delta(self):
-        # 35天优先于44天；delta最接近0.20的是598；宽2：2.80-2.56=0.24≥0.10 → 开
+        # 35天优先于44天；delta最接近0.20的是598；宽2收入0.24但每张亏$176>$160 → 宽1收入0.10
         p = oa.pick_spread(CHAIN, 650, TODAY, 2000)
-        assert p["ok"] and p["expiry"] == EXP and p["short_strike"] == 598 and p["width"] == 2.0
+        assert p["ok"] and p["expiry"] == EXP and p["short_strike"] == 598
+        assert p["width"] == 1.0 and p["credit"] == 0.10
 
     def test_delta20_spread_is_feasible(self):
         # 2026-09-30 10:30实况：SPY卖738P，宽2收入0.21、宽1收入0.17。原"≥宽度20%"规则全挡，修正后可开
