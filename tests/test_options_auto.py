@@ -35,6 +35,18 @@ class TestPickSpread:
         p = oa.pick_spread(rows, 780, TODAY, 2000)
         assert p["ok"] and p["width"] == 2.0 and p["credit"] == 0.21 and p["max_loss"] == 179
 
+    def test_falls_back_to_next_expiry(self):
+        # 35天那期（EXP）卖出腿下方没有行权价（TLT 11/6式的断档）→ 改用44天那期
+        rows = [_row(74.5, 0.61, 0.63, -0.20, root="TLT"), _row(70, 0.12, 0.13, -0.05, root="TLT"),
+                _row(75, 0.80, 0.83, -0.20, EXP_FAR, "TLT"), _row(74, 0.55, 0.57, -0.15, EXP_FAR, "TLT")]
+        p = oa.pick_spread(rows, 77.64, TODAY, 2000)
+        assert p["ok"] and p["expiry"] == EXP_FAR and (p["short_strike"], p["long_strike"]) == (75, 74)
+
+    def test_all_expiries_fail_lists_each(self):
+        rows = [_row(74.5, 0.61, 0.63, -0.20, root="TLT"), _row(75, 0.80, 0.83, -0.20, EXP_FAR, "TLT")]
+        p = oa.pick_spread(rows, 77.64, TODAY, 2000)
+        assert not p["ok"] and "11-04：" in p["note"] and "11-13：" in p["note"]
+
     def test_uses_existing_strike_grid(self):
         # 2026-09-30 TLT实况：卖74.5P，下方只有74/73/72这类整数行权价，没有72.5/73.5
         rows = [_row(74.5, 1.00, 1.03, -0.20, root="TLT"), _row(74, 0.85, 0.88, -0.17, root="TLT"),
