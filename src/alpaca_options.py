@@ -2,8 +2,8 @@
 Alpaca期权模拟交易（2026-09-29新增，配合wiki stock-master/options-log）
 
 用途：把options-log的纸上交易从"手工记对手价"换成在Alpaca模拟账户里真实挂单，
-成交价、持仓、盈亏由Alpaca记录。只做模拟账户（paper=True写死），不会自动下单——
-只能由人通过命令行显式执行open，且下单前强制检查options-log的规则：
+成交价、持仓、盈亏由Alpaca记录。只做模拟账户（paper=True写死）。本模块不会自动下单——
+只能由人通过命令行显式执行open（自动下单的只有src/options_auto.py的SPY卖put价差），且下单前强制检查options-log的规则：
   规则1：单笔最大亏损 ≤ 账户8%
   规则2：价差 ≥ 14天到期
   规则3：同时最多1笔期权持仓
