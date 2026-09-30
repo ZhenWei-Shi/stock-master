@@ -122,3 +122,79 @@ def test_fractional_positions_at_weight_limit_fit_exposure_cap(tmp_path, monkeyp
         r = pt.open_position(t, n, px, stop_loss=round(px * 0.8, 2), target=px * 100,
                              strategy="Momentum/Monthly", mode="momentum")
         assert r["ok"], r
+
+
+# ── Alpaca镜像 ────────────────────────────────────────────────
+
+def test_alpaca_diff():
+    assert mb.alpaca_diff({"MU": 0.73, "AXTI": 20.5}, {"MU": 0.73, "MRNA": 3.0}) == (["MRNA"], {"AXTI": 20.5})
+    assert mb.alpaca_diff({}, {}) == ([], {})
+
+
+class _FakeAlpaca:
+    def __init__(self, positions):
+        from types import SimpleNamespace as NS
+        self.pos = [NS(symbol=t, qty=str(q), asset_class=c) for t, q, c in positions]
+        self.closed, self.orders = [], []
+
+    def get_all_positions(self):
+        return self.pos
+
+    def get_orders(self, req):
+        from types import SimpleNamespace as NS
+        return [NS(symbol=t) for t in getattr(self, "pending", [])]
+
+    def close_position(self, t):
+        self.closed.append(t)
+
+    def submit_order(self, req):
+        from types import SimpleNamespace as NS
+        self.orders.append(req)
+        return NS(status="accepted")
+
+
+def test_sync_alpaca_mirrors_local_book(tmp_path, monkeypatch):
+    monkeypatch.setattr(pt, "_MOM", str(tmp_path / "mom.json"))
+    pt.init_account(2000, mode="momentum")
+    pt.open_position("MU", 0.7296, 1069.0, stop_loss=855.2, target=106900, strategy=mb.STRATEGY, mode="momentum")
+    c = _FakeAlpaca([("MRNA", 3, "us_equity"), ("SPY261104P00598000", -1, "us_option")])
+    out = mb.sync_alpaca(client=c)
+    assert c.closed == ["MRNA"]                                  # 期权腿不碰
+    assert [(o.symbol, float(o.qty), str(o.side.value)) for o in c.orders] == [("MU", 0.7296, "buy")]
+    assert len(out) == 2
+
+    c3 = _FakeAlpaca([("MRNA", 3, "us_equity")])
+    c3.pending = ["MU"]                                          # 买单还没成交 → 不重复下
+    out = mb.sync_alpaca(client=c3)
+    assert c3.closed == ["MRNA"] and not c3.orders and "未成交挂单" in out[0]
+
+    c2 = _FakeAlpaca([("MRNA", 3, "us_equity")])
+    assert "空跑" in mb.sync_alpaca(dry_run=True, client=c2)[0] and not c2.closed
+
+
+def test_sync_alpaca_does_nothing_without_book(tmp_path, monkeypatch):
+    monkeypatch.setattr(pt, "_MOM", str(tmp_path / "missing.json"))
+    c = _FakeAlpaca([("MRNA", 3, "us_equity")])
+    assert mb.sync_alpaca(client=c) == [] and not c.closed
+
+
+def test_sync_alpaca_unconfigured(monkeypatch):
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    assert mb.sync_alpaca() == []
+
+
+def test_alpaca_buy_falls_back_to_whole_shares():
+    class C:
+        def __init__(self):
+            self.qty = []
+
+        def submit_order(self, req):
+            from types import SimpleNamespace as NS
+            self.qty.append(float(req.qty))
+            if float(req.qty) != int(float(req.qty)):
+                raise RuntimeError("asset AXTI is not fractionable")
+            return NS(status="accepted")
+    c = C()
+    assert "按整数股" in mb._alpaca_buy(c, "AXTI", 26.47) and c.qty == [26.47, 26.0]
+    c = C()
+    assert "失败" in mb._alpaca_buy(c, "BIG", 0.73) and c.qty == [0.73]
