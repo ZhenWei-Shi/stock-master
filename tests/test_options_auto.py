@@ -275,3 +275,16 @@ def test_unfilled_open_order_frees_slot(store):
 def test_unconfigured_is_inert(store, monkeypatch):
     monkeypatch.delenv("ALPACA_API_KEY", raising=False)
     assert "未配置" in oa.run(today=TODAY)["status"]
+
+
+def test_weekly_summary_per_arm():
+    trades = [{"id": 1, "arm": "control", "underlying": "SPY", "expiry": "2026-11-06", "short_strike": 738.0,
+               "long_strike": 736.0, "qty": 1, "status": "not_filled"},
+              {"id": 2, "arm": "scan", "underlying": "IWM", "expiry": "2026-11-06", "short_strike": 265.0,
+               "long_strike": 263.0, "qty": 1, "credit": 0.25, "status": "open",
+               "last_check": {"close_debit": 0.15}},
+              {"id": 3, "arm": "scan", "underlying": "QQQ", "expiry": "2026-10-30", "short_strike": 500.0,
+               "long_strike": 498.0, "qty": 1, "credit": 0.40, "status": "closed", "pnl": 20.0}]
+    text = oa.weekly_summary(trades)
+    assert "对照SPY：无持仓、未平过仓" in text
+    assert "IWM 11-06 265/263P 收入$0.25，浮动$+10" in text and "已平1笔，胜1，累计$+20" in text

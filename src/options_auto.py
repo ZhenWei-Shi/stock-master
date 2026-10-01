@@ -522,6 +522,30 @@ def status_line(trades: list | None = None) -> str:
     return "卖put价差 " + "；".join(out)
 
 
+def weekly_summary(trades: list | None = None) -> str:
+    """周报用：两个仓位各自的持仓（含按最近一次检查的平仓成本估的浮动盈亏）和已平统计。"""
+    trades = _load() if trades is None else trades
+    lines = ["<b>ETF卖put价差</b>（Alpaca模拟账户）"]
+    for arm in ("control", "scan"):
+        mine = [t for t in trades if arm_of(t) == arm]
+        closed = [t for t in mine if t["status"] == "closed"]
+        head = f"{ARM_NAME[arm]}："
+        parts = []
+        for t in (t for t in mine if t["status"] in ACTIVE):
+            if t["status"] == "pending_open":
+                parts.append(f"{_label(t)} 挂单中")
+                continue
+            debit = (t.get("last_check") or {}).get("close_debit")
+            unreal = "" if debit is None else f"，浮动${(t['credit'] - debit) * 100 * t['qty']:+.0f}"
+            parts.append(f"{_label(t)} 收入${t['credit']:.2f}{unreal}")
+        if closed:
+            pnl = [t.get("pnl", 0) for t in closed]
+            wins = sum(1 for x in pnl if x > 0)
+            parts.append(f"已平{len(closed)}笔，胜{wins}，累计${sum(pnl):+.0f}，每笔均${sum(pnl) / len(pnl):+.1f}")
+        lines.append(head + ("；".join(parts) if parts else "无持仓、未平过仓"))
+    return "\n".join(lines)
+
+
 def run_in_subprocess(allow_open: bool = True, timeout: int = 600) -> dict:
     """供scheduler调用：子进程运行，alpaca-py/yfinance不常驻scheduler内存。"""
     import subprocess

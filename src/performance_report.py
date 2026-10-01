@@ -43,6 +43,7 @@ BOOKS = {
     "paper": "原模拟盘（九关时代，已停止开新仓）",
     "momentum": "月度动量账本",
 }
+ALPACA_START = 2000.0      # 2026-09-30 01:5x ET Alpaca模拟账户重置为$2,000
 MIN_DAYS_FOR_RATIOS = 5   # 交易日太少时不算Sharpe/回撤这类比率（quantstats在极短序列上会报错或失真）
 
 
@@ -219,8 +220,39 @@ def format_telegram(rep: dict, header: bool = True) -> str:
     return "\n".join(lines)
 
 
-def format_all(books: dict | None = None) -> str:
-    """周报/perf：所有账本拼成一条消息；单个账本出错或未开始不影响其他账本（books可注入供测试）。"""
+def options_section() -> str:
+    from .options_auto import weekly_summary
+    return weekly_summary()
+
+
+def alpaca_section(client=None) -> str:
+    """Alpaca模拟账户整体：净值（对比重置时的$2,000）、现金、股票镜像和期权腿。"""
+    from . import alpaca_client
+    client = client or alpaca_client.paper_trading_client()
+    if client is None:
+        return "<b>Alpaca模拟账户</b>\n未配置密钥"
+    acct = client.get_account()
+    value, cash = float(acct.portfolio_value), float(acct.cash)
+    lines = ["<b>Alpaca模拟账户</b>",
+             f"净值${value:,.2f}（自9/30重置${ALPACA_START:,.0f}起{(value / ALPACA_START - 1) * 100:+.2f}%），现金${cash:,.2f}"]
+    stocks, opts = [], 0
+    for p in client.get_all_positions():
+        c = getattr(p, "asset_class", None)
+        if str(getattr(c, "value", c)) == "us_option":
+            opts += 1
+        else:
+            stocks.append(f"{p.symbol} {float(p.qty):g}股 浮动${float(p.unrealized_pl):+.0f}")
+    lines.append("股票（动量账本镜像）：" + ("，".join(stocks) if stocks else "无"))
+    lines.append(f"期权腿：{opts}条（每个价差两条）")
+    return "\n".join(lines)
+
+
+EXTRA_SECTIONS = (("ETF卖put价差", options_section), ("Alpaca模拟账户", alpaca_section))
+
+
+def format_all(books: dict | None = None, extras=None) -> str:
+    """周报/perf：所有账本拼成一条消息；单个账本/段落出错或未开始不影响其他部分
+    （books、extras可注入供测试；extras默认为期权段+Alpaca账户段）。"""
     parts = [f"📊 <b>模拟盘周报</b>  {datetime.now(ET):%Y-%m-%d}"]
     for mode, name in BOOKS.items():
         try:
@@ -233,6 +265,11 @@ def format_all(books: dict | None = None) -> str:
                          else f"<b>{name}</b>\n尚未开始（动量账本在每月最后一个交易日15:40首次调仓时建立）")
         except Exception as e:
             parts.append(f"<b>{name}</b>\n报告生成失败：{str(e)[:120]}")
+    for name, fn in (EXTRA_SECTIONS if extras is None else extras):
+        try:
+            parts.append(fn())
+        except Exception as e:
+            parts.append(f"<b>{name}</b>\n生成失败：{str(e)[:120]}")
     parts.append("（资金曲线按每日收盘价还原；样本很少时各项比率参考意义有限）")
     return "\n\n".join(parts)
 

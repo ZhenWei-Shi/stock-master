@@ -129,3 +129,21 @@ def test_format_all_handles_not_started_and_failures(monkeypatch):
     monkeypatch.setattr(pr, "load_book", lambda mode: (_ for _ in ()).throw(RuntimeError("boom")) if mode == "paper" else None)
     text2 = format_all()
     assert "报告生成失败：boom" in text2 and "尚未开始" in text2
+
+
+def test_extra_sections_isolated():
+    def boom():
+        raise RuntimeError("x")
+    text = format_all({"paper": None, "momentum": None},
+                      extras=[("期权", lambda: "<b>期权段</b>"), ("Alpaca", boom)])
+    assert "期权段" in text and "<b>Alpaca</b>\n生成失败：x" in text
+
+
+def test_alpaca_section_with_fake_client():
+    from types import SimpleNamespace as NS
+    c = NS(get_account=lambda: NS(portfolio_value="2010.5", cash="465.1"),
+           get_all_positions=lambda: [NS(symbol="MU", qty="0.7302", unrealized_pl="12.3", asset_class="us_equity"),
+                                      NS(symbol="IWM261106P00265000", qty="-1", unrealized_pl="3", asset_class="us_option"),
+                                      NS(symbol="IWM261106P00263000", qty="1", unrealized_pl="-2", asset_class="us_option")])
+    text = pr.alpaca_section(c)
+    assert "净值$2,010.50" in text and "+0.52%" in text and "MU 0.7302股 浮动$+12" in text and "期权腿：2条" in text
