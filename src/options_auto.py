@@ -27,6 +27,11 @@ ETF卖put价差自动开仓（2026-09-30新增，Alpaca模拟账户，前向实�
         张数 = floor(账户价值×10% ÷ 每张最大亏损)，再受期权购买力限制（9/30由8%放到10%）；
         账户涨了自动多开、跌了自动少开，不足1张就不开
         限价 = 对手价收入（卖出腿bid − 买入腿ask），与options-log规则4口径一致
+        改价（2026-10-01新增）：开仓单挂出满REPRICE_MIN_WAIT分钟未成交 → 撤单、限价下调
+        REPRICE_STEP重挂，盘中约每30分钟一次；底价 = max(MIN_CREDIT, 首次限价×REPRICE_FLOOR_RATIO)，
+        且下调后最大亏损仍须≤账户OPT_MAX_LOSS_PCT。到底价仍不成交就等收盘失效、次日重选。
+        起因：9/30 SPY 738/736P按对手价限价$0.35挂了一整天没成交（Alpaca免费档期权报价是
+        指示性报价，当天10:30中间价才$0.31，$0.35疑为失真/过时报价），见wiki options-log
   平仓（每次检查按对手价 = 卖出腿ask − 买入腿bid 估算平仓成本）：
         止盈：平仓成本 ≤ 收入×TAKE_PROFIT
         止损：平仓成本 ≥ 收入×STOP_MULT（亏损约为收入的2倍）
@@ -36,7 +41,7 @@ ETF卖put价差自动开仓（2026-09-30新增，Alpaca模拟账户，前向实�
 Alpaca多腿（mleg）限价单符号：正数=借方（付钱），负数=贷方（收钱）。Alpaca文档页
 没写，只在Python SDK参考里有；传成正数会把收钱的单当成付钱的单。
 
-用法：python -m src.options_auto [--dry-run] [--no-open] [--status]
+用法：python -m src.options_auto [--dry-run] [--no-open] [--status] [--reprice]
 """
 import argparse
 import json
@@ -73,6 +78,9 @@ EXIT_DTE = 21
 VIX_MAX = 35.0
 RISK_FREE = 0.04          # 只用于greeks缺失时自己算delta/IV
 ACTIVE = ("pending_open", "open", "pending_close")
+REPRICE_STEP = 0.02
+REPRICE_FLOOR_RATIO = 0.70  # 与MIN_FILL_RATIO同口径：最多让到首次限价的70%
+REPRICE_MIN_WAIT = 25       # 分钟；调度约每30分钟一次，留几分钟余量
 
 
 # ── 纯函数 ─────────────────────────────────────────────────────
@@ -247,6 +255,14 @@ def exit_decision(tr: dict, debit: float | None, today: date) -> dict:
     return {"action": "hold", "reason": f"平仓成本${debit:.2f}，剩{dte}天"}
 
 
+def next_limit(current: float, initial: float) -> float | None:
+    """改价后的新限价（每股贷方）；已到底价返回None（纯函数）。"""
+    floor = max(MIN_CREDIT, math.ceil(initial * REPRICE_FLOOR_RATIO * 100 - 1e-6) / 100)   # 向上取整到分
+    if current <= floor + 1e-9:
+        return None
+    return max(round(current - REPRICE_STEP, 2), floor)
+
+
 def arm_of(tr: dict) -> str:
     return tr.get("arm", "control")   # 2026-09-30扫描上线前的记录都是SPY对照
 
@@ -403,7 +419,8 @@ def _open(client, trades: list, cand: dict, arm: str, vix, acct_value: float, to
           "planned_credit": plan["credit"], "short_delta": plan["short_delta"],
           "context": {"spot": cand["spot"], "rv20": cand["rv20"], "iv": cand["iv"], "iv_rv": cand["iv_rv"],
                       "above_ma200": cand["above_ma200"], "vix": vix, "account": acct_value, "dte": plan["dte"]},
-          "submitted": today.isoformat(), "open_order_id": str(o.id), "status": "pending_open"}
+          "submitted": today.isoformat(), "open_order_id": str(o.id), "status": "pending_open",
+          "limit_credit": plan["credit"], "last_submit_at": datetime.now(ET).isoformat(timespec="seconds")}
     trades.append(tr)
     return (f"📥 <b>卖put价差挂开仓单</b>[{ARM_NAME[arm]}] {_label(tr)}（{plan['dte']}天）\n"
             f"限价贷方${plan['credit']:.2f}×{plan['qty']}张，卖出腿delta {plan['short_delta']}，"
@@ -500,6 +517,81 @@ def run(dry_run: bool = False, allow_open: bool = True, today: date | None = Non
     return {"msgs": msgs, "status": "；".join(notes) or status_line(trades)}
 
 
+_WORKING = ("new", "accepted", "pending_new")
+_FINAL = ("canceled", "filled", "expired", "rejected", "done_for_day")
+
+
+def _cancel_and_wait(client, oid: str, sleep, tries: int = 10) -> str:
+    """撤单并等到终态，返回最后查到的状态。撤单是异步的，没确认撤掉就重挂，两张单可能都成交。"""
+    try:
+        client.cancel_order_by_id(oid)
+    except Exception:
+        pass   # 刚好成交/失效时撤单会报错，以下面查到的状态为准
+    st = ""
+    for _ in range(tries):
+        st = _order_status(client.get_order_by_id(oid))
+        if st in _FINAL:
+            return st
+        sleep(1)
+    return st
+
+
+def reprice(client=None, now: datetime | None = None, sleep=None) -> dict:
+    """盘中改价：当天未成交的开仓单撤掉、限价下调REPRICE_STEP重挂（规则见文件头）。"""
+    import time
+    sleep = sleep or time.sleep
+    now = now or datetime.now(ET)
+    today = now.date()
+    client = client or alpaca_client.paper_trading_client()
+    if client is None:
+        return {"msgs": [], "status": "未配置ALPACA密钥，跳过"}
+    trades = _load()
+    msgs = _sync_orders(client, trades, today)
+    notes, value = [], None
+    for tr in trades:
+        if tr["status"] != "pending_open" or tr.get("submitted") != today.isoformat():
+            continue
+        last = tr.get("last_submit_at")
+        if not last:
+            continue
+        waited = (now - datetime.fromisoformat(last)).total_seconds() / 60
+        if waited < REPRICE_MIN_WAIT:
+            notes.append(f"{_label(tr)}：挂出{waited:.0f}分钟，未到改价时间")
+            continue
+        cur = tr.get("limit_credit", tr["planned_credit"])
+        new = next_limit(cur, tr["planned_credit"])
+        if new is None:
+            notes.append(f"{_label(tr)}：已到底价${cur:.2f}，等收盘失效")
+            continue
+        if value is None:
+            value = float(client.get_account().portfolio_value)
+        if (tr["width"] - new) * 100 * tr["qty"] > value * OPT_MAX_LOSS_PCT / 100 + 1e-9:
+            notes.append(f"{_label(tr)}：降到${new:.2f}后最大亏损超过账户{OPT_MAX_LOSS_PCT:.0f}%，不再改价")
+            continue
+        oid = tr["open_order_id"]
+        if _order_status(client.get_order_by_id(oid)) not in _WORKING:
+            continue   # 部分成交等情况不动，留给_sync_orders
+        st = _cancel_and_wait(client, oid, sleep)
+        if st != "canceled":
+            notes.append(f"{_label(tr)}：撤单后状态{st or '未知'}，本次不重挂")
+            continue
+        o = _submit_mleg(client, [(tr["short_sym"], "sell", "SELL_TO_OPEN"),
+                                  (tr["long_sym"], "buy", "BUY_TO_OPEN")], -new, tr["qty"])
+        tr.setdefault("reprices", []).append({"at": now.isoformat(timespec="seconds"), "from": cur,
+                                              "to": new, "old_order": oid})
+        tr.update(open_order_id=str(o.id), limit_credit=new,
+                  last_submit_at=now.isoformat(timespec="seconds"))
+        notes.append(f"{_label(tr)}：未成交，限价贷方${cur:.2f}→${new:.2f}重挂")
+    _save(trades)
+    return {"msgs": msgs, "status": "；".join(notes) or "没有需要改价的挂单"}
+
+
+def has_pending_open_today(today: date | None = None) -> bool:
+    """scheduler用：今天有没有未成交的开仓单（没有就不起子进程）。"""
+    today = today or datetime.now(ET).date()
+    return any(t["status"] == "pending_open" and t.get("submitted") == today.isoformat() for t in _load())
+
+
 def _label_plan(c: dict) -> str:
     p = c["plan"]
     return (f"{c['underlying']} {p['expiry']} {p['short_strike']:g}/{p['long_strike']:g}P×{p['qty']}，"
@@ -546,11 +638,12 @@ def weekly_summary(trades: list | None = None) -> str:
     return "\n".join(lines)
 
 
-def run_in_subprocess(allow_open: bool = True, timeout: int = 600) -> dict:
+def run_in_subprocess(allow_open: bool = True, timeout: int = 600, reprice_only: bool = False) -> dict:
     """供scheduler调用：子进程运行，alpaca-py/yfinance不常驻scheduler内存。"""
     import subprocess
     root = os.path.join(os.path.dirname(__file__), "..")
-    args = [sys.executable, "-m", "src.options_auto", "--json"] + ([] if allow_open else ["--no-open"])
+    args = ([sys.executable, "-m", "src.options_auto", "--json"] + ([] if allow_open else ["--no-open"])
+            + (["--reprice"] if reprice_only else []))
     r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=timeout,
                        env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     if r.returncode != 0:
@@ -565,9 +658,14 @@ if __name__ == "__main__":
     ap.add_argument("--no-open", action="store_true", help="只检查平仓，不开新仓")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--json", action="store_true", help="最后一行输出JSON（供scheduler解析）")
+    ap.add_argument("--reprice", action="store_true", help="只给当天未成交的开仓单改价重挂")
     a = ap.parse_args()
     if a.status:
         print(status_line())
+        sys.exit(0)
+    if a.reprice:
+        res = reprice()
+        print(json.dumps(res, ensure_ascii=False) if a.json else "\n".join(res["msgs"] + [res["status"]]))
         sys.exit(0)
     res = run(dry_run=a.dry_run, allow_open=not a.no_open)
     # 顺带给动量账本的Alpaca镜像对账（本地-20%止损平仓后Alpaca跟着卖）：放在这个

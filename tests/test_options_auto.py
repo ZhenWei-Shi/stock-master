@@ -288,3 +288,109 @@ def test_weekly_summary_per_arm():
     text = oa.weekly_summary(trades)
     assert "对照SPY：无持仓、未平过仓" in text
     assert "IWM 11-06 265/263P 收入$0.25，浮动$+10" in text and "已平1笔，胜1，累计$+20" in text
+
+
+# ── 盘中改价（2026-10-01） ─────────────────────────────────────
+
+def test_next_limit_steps_down_to_floor():
+    assert oa.next_limit(0.35, 0.35) == 0.33
+    assert oa.next_limit(0.26, 0.35) == 0.25        # 底价 = 0.35×70% = 0.245 → 0.25
+    assert oa.next_limit(0.25, 0.35) is None
+    assert oa.next_limit(0.12, 0.12) == 0.10        # 底价不低于MIN_CREDIT
+    assert oa.next_limit(0.10, 0.12) is None
+
+
+class RepriceClient(FakeClient):
+    """按订单id记状态；cancel_after_polls次查询后撤单才生效（模拟异步撤单）。"""
+    def __init__(self, cancel_to="canceled", cancel_after_polls=0, **kw):
+        super().__init__(**kw)
+        self.status, self.cancels = {}, []
+        self.cancel_to, self.cancel_after_polls = cancel_to, cancel_after_polls
+
+    def submit_order(self, req):
+        o = super().submit_order(req)
+        self.status[o.id] = "new"
+        return o
+
+    def cancel_order_by_id(self, oid):
+        self.cancels.append(oid)
+        self.status[oid] = "pending_cancel"
+        self._polls = 0
+
+    def get_order_by_id(self, oid):
+        st = self.status.get(oid, "new")
+        if st == "pending_cancel":
+            self._polls += 1
+            if self._polls > self.cancel_after_polls:
+                st = self.status[oid] = self.cancel_to
+        return SimpleNamespace(status=st, filled_avg_price=None, filled_at=None)
+
+
+def _pending_spy(client):
+    oa.run(today=TODAY, client=client, market=FakeMarket(ROWS))
+    trades = oa._load()
+    trades[0]["last_submit_at"] = "2026-09-30T10:30:00-04:00"
+    oa._save(trades)
+    return trades[0]
+
+
+def _at(h, m):
+    return oa.ET.localize(datetime(2026, 9, 30, h, m))
+
+
+def test_reprice_cancels_and_resubmits_lower(store):
+    c = RepriceClient(cancel_after_polls=2)
+    _pending_spy(c)
+    r = oa.reprice(client=c, now=_at(11, 5), sleep=lambda s: None)
+    tr = oa._load()[0]
+    assert c.cancels == ["o1"] and len(c.orders) == 2
+    assert float(c.orders[1].limit_price) == -0.42                  # 0.44 → 0.42，仍是贷方
+    assert {str(l.position_intent.value) for l in c.orders[1].legs} == {"sell_to_open", "buy_to_open"}
+    assert tr["open_order_id"] == "o2" and tr["limit_credit"] == 0.42 and tr["planned_credit"] == 0.44
+    assert tr["reprices"][0]["old_order"] == "o1" and "0.44→$0.42" in r["status"]
+
+
+def test_reprice_waits_and_stops_at_floor(store):
+    c = RepriceClient()
+    _pending_spy(c)
+    assert "未到改价时间" in oa.reprice(client=c, now=_at(10, 45), sleep=lambda s: None)["status"]
+    assert len(c.orders) == 1
+    trades = oa._load()
+    trades[0]["limit_credit"] = 0.31                                 # 底价 0.44×70% = 0.31
+    oa._save(trades)
+    assert "已到底价" in oa.reprice(client=c, now=_at(11, 5), sleep=lambda s: None)["status"]
+    assert len(c.orders) == 1 and not c.cancels
+
+
+def test_reprice_does_not_resubmit_if_filled_during_cancel(store):
+    c = RepriceClient(cancel_to="filled")
+    _pending_spy(c)
+    r = oa.reprice(client=c, now=_at(11, 5), sleep=lambda s: None)
+    assert len(c.orders) == 1 and "不重挂" in r["status"]
+    assert oa._load()[0]["open_order_id"] == "o1"                   # 成交留给_sync_orders记录
+
+
+def test_reprice_gives_up_if_cancel_unconfirmed(store):
+    c = RepriceClient(cancel_after_polls=99)
+    _pending_spy(c)
+    r = oa.reprice(client=c, now=_at(11, 5), sleep=lambda s: None)
+    assert len(c.orders) == 1 and "pending_cancel" in r["status"]
+
+
+def test_reprice_respects_max_loss_cap(store):
+    c = RepriceClient(value="1580")                                  # 10% = $158，降价后每张亏$158
+    _pending_spy(c)
+    trades = oa._load()
+    trades[0]["limit_credit"] = 0.44
+    oa._save(trades)
+    c.value = "1570"
+    r = oa.reprice(client=c, now=_at(11, 5), sleep=lambda s: None)
+    assert "不再改价" in r["status"] and len(c.orders) == 1
+
+
+def test_reprice_ignores_old_days(store):
+    c = RepriceClient()
+    _pending_spy(c)
+    r = oa.reprice(client=c, now=oa.ET.localize(datetime(2026, 10, 1, 11, 5)), sleep=lambda s: None)
+    assert len(c.orders) == 1 and r["status"] == "没有需要改价的挂单"
+    assert oa.has_pending_open_today(date(2026, 10, 1)) is False

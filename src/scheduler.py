@@ -859,6 +859,20 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             if use_telegram:
                 send_telegram(f"❌ SPY卖put价差检查失败：{str(e)[:200]}")
 
+    def _options_reprice():
+        """期权开仓单盘中改价（2026-10-01）：今天有未成交的开仓单才起子进程。"""
+        try:
+            from src.options_auto import has_pending_open_today, run_in_subprocess
+            if not has_pending_open_today():
+                return
+            r = run_in_subprocess(reprice_only=True)
+            for msg in r["msgs"]:
+                if use_telegram:
+                    send_telegram(msg)
+            print(f"[OptionsReprice] {r['status']}")
+        except Exception as e:
+            print(f"[OptionsReprice] 运行失败：{e}")
+
     def _overnight_lab():
         """15:45 H4隔夜放量前向登记（只记录不下单）：先给昨天的记录填今天开盘价，再记今天的信号和对照。"""
         try:
@@ -903,6 +917,9 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (16, 20): ("failed_breakout_log", _failed_breakout_log),
         (16, 30): ("weekly_performance", _weekly_performance),
     }
+    # 期权开仓单改价：10:30挂单后约每30分钟一次，错开整点的盘中检查（同一分钟只能放一个任务）
+    for h, m in ((11, 5), (11, 35), (12, 5), (12, 35), (13, 5), (13, 35), (14, 10), (14, 35), (15, 5)):
+        SCHEDULE[(h, m)] = (f"options_reprice_{h:02d}{m:02d}", _options_reprice)
 
     executed_today = load_executed(datetime.now(ET).strftime("%Y-%m-%d"))
     if executed_today:
@@ -921,7 +938,7 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             f"🤖 <b>TradingAgent 启动</b>\n"
             f"账户：${account:,.0f} | 模式：{mode}\n"
             f"监控股票：{', '.join(watchlist[:8])}{'...' if len(watchlist)>8 else ''}\n"
-            f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / 10:30+15:30 SPY卖put价差 / "
+            f"计划（ET）：09:00晨报 / 10:00-15:00每小时监控 / 10:30+15:30 SPY卖put价差（未成交每30分钟改价）/ "
             f"15:40月度动量（月末）/ 15:45隔夜放量登记 / 15:50事件实验室 / 16:05日报 / "
             f"16:10期权盯盘 / 16:20假突破记录 / 周五16:30周报"
         )
