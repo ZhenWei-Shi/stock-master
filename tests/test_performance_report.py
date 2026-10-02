@@ -68,7 +68,9 @@ def test_full_report_with_fake_prices():
     }
     rep = build_report(ledger, fetch=lambda t: spy if t == "SPY" else x)
     m = rep["metrics"]
-    assert m["days"] == len(rep["equity"]) and m["bench_ret"] > 0
+    # 首笔9/2开仓，曲线从9/1（前一交易日）起算：多一个基准点，交易日数不算它
+    assert rep["equity"].index[0] == pd.Timestamp("2026-09-01") and rep["equity"].iloc[0] == 2000
+    assert m["days"] == len(rep["equity"]) - 1 and m["bench_ret"] > 0
     text = format_telegram(rep)
     assert "模拟盘周报" in text and "持仓中：X" in text
 
@@ -112,6 +114,25 @@ def test_momentum_report_short_history_has_pool_but_no_ratios():
     text = pr.format_telegram(rep, header=False)
     assert "月度动量账本" in text and "同池等权" in text and "暂不计算" in text
     assert "时间止损制度" not in text
+
+
+def test_total_return_measured_from_initial_value():
+    """2026-10-02：开仓当天收盘浮亏也要算进总收益，SPY/同池等权同样从前一天收盘算起。"""
+    pytest.importorskip("quantstats")
+    idx = pd.bdate_range("2026-09-29", periods=4)          # 9/29(前一天) 9/30(开仓) 10/1 10/2
+    spy = pd.Series([500.0, 510.0, 510.0, 515.1], index=idx)
+    # 9/30 15:40以200/600买入，当天收盘跌到190/570；10/2涨到220/660
+    px = {"MRNA": pd.Series([195.0, 190.0, 200.0, 220.0], index=idx),
+          "AMD": pd.Series([590.0, 570.0, 600.0, 660.0], index=idx)}
+    pool = pd.DataFrame({"X": [100.0, 102.0, 102.0, 103.02]}, index=idx)
+    rep = pr.build_report(_momentum_ledger(), fetch=lambda t: spy if t == "SPY" else px[t],
+                          mode="momentum", pool_fetch=lambda: pool)
+    m = rep["metrics"]
+    # 现金2000-600-600=800，10/2持仓3×220+660=1320 → 2120，相对起始2000为+6%
+    assert rep["equity"].iloc[0] == 2000 and rep["equity"].iloc[-1] == pytest.approx(2120)
+    assert m["total_ret"] == pytest.approx(6.0) and m["days"] == 3
+    assert m["bench_ret"] == pytest.approx(3.02)           # 500→515.1，含开仓当天
+    assert rep["pool_ret"] == pytest.approx(3.02)
 
 
 def test_format_all_handles_not_started_and_failures(monkeypatch):

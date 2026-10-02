@@ -163,11 +163,19 @@ def build_report(ledger: dict | None = None, fetch=None, mode: str = "paper", po
             return yf.Ticker(t).history(start=start - pd.Timedelta(days=5))["Close"]
 
     spy = fetch("SPY")
-    cal = pd.DatetimeIndex(spy.index).tz_localize(None).normalize()
-    cal = cal[cal >= start]
+    full = pd.DatetimeIndex(spy.index).tz_localize(None).normalize()
+    # 2026-10-02：曲线从首笔开仓前一个交易日起算，那天资金=起始资金。原来从开仓当天收盘起算，
+    # 总收益漏掉"买入到当天收盘"那段，和"起始$2,000"对不上（动量账本周报+4.6%，按$2,000实为+3.8%）。
+    # SPY/同池等权用同一个cal，也从前一天收盘起算，口径保持一致
+    before = full[full < start]
+    cal = full[full >= start]
+    if len(before):
+        cal = before[-1:].append(cal)
     closes = {t: fetch(t) for t in {p["ticker"] for p in positions}}
     equity = build_equity_curve(positions, acct["initial_value"], closes, cal)
-    rep = {"equity": equity, "metrics": curve_metrics(equity, spy), "trades": trade_summary(positions),
+    metrics = curve_metrics(equity, spy)
+    metrics["days"] = int((cal >= start).sum())   # 交易日数不算前一天那个基准点
+    rep = {"equity": equity, "metrics": metrics, "trades": trade_summary(positions),
            "account": acct, "spy": spy, "mode": mode}
     if mode == "momentum":
         # 月度动量登记的评估标准：相对同一股票池等权持有的超额（只和SPY比会被股票池本身的涨跌带偏）
