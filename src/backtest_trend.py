@@ -102,13 +102,13 @@ def window_return(rets: pd.Series, start: str, end: str) -> float:
     return round(float((1 + r).prod() - 1) * 100, 1) if len(r) else float("nan")
 
 
-def judge(strat: pd.Series, bench: pd.Series) -> dict:
-    """按登记标准判断一条规则（纯函数）。"""
+def judge(strat: pd.Series, bench: pd.Series, dd_cut: float = 1 / 3) -> dict:
+    """按登记标准判断一条规则（纯函数）。dd_cut：回撤至少要比基准小的比例。"""
     ps, pb = perf_stats(strat, 12), perf_stats(bench, 12)
     half = len(strat) // 2
     halves = [(perf_stats(strat.iloc[a:b], 12)["sharpe"], perf_stats(bench.iloc[a:b], 12)["sharpe"])
               for a, b in ((0, half), (half, len(strat)))]
-    c1 = ps["max_dd"] >= pb["max_dd"] * (2 / 3)          # 回撤是负数：-30 >= -45*2/3
+    c1 = ps["max_dd"] >= pb["max_dd"] * (1 - dd_cut)     # 回撤是负数：-30 >= -45*2/3
     c2 = ps["sharpe"] >= pb["sharpe"]
     c3 = all(s >= b - 0.1 for s, b in halves)
     return {"dd_ok": c1, "sharpe_ok": c2, "halves_ok": c3, "pass": c1 and c2 and c3, "halves": halves}
