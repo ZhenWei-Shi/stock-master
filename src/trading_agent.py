@@ -291,7 +291,6 @@ def run_monitor(mode: str = "paper", auto_stop: bool = True) -> dict:
     from .paper_trading import mark_to_market, close_position
 
     mtm    = mark_to_market(mode)
-    alerts = mtm.get("alerts", [])
     closed = []
 
     for pos in mtm.get("open_positions", []):
@@ -319,6 +318,12 @@ def run_monitor(mode: str = "paper", auto_stop: bool = True) -> dict:
                     print(f"[Agent] {reason} {pos['ticker']} | P&L: ${r['pnl']:.2f}")
             except Exception as e:
                 print(f"[Agent] {reason}执行失败 {pos['ticker']}: {e}")
+
+    # 2026-10-02：警报是平仓前盯市算的，已自动平掉的仓位不再推"建议平仓/应立即止损"
+    # （之前AMD时间止损平仓后紧跟着又推了一条"已持仓11天，建议平仓"）。平仓失败的照常推
+    closed_ids = {c["trade_id"] for c in closed}
+    alerts = [p["alert"] for p in mtm.get("open_positions", [])
+              if p.get("alert") and p.get("id") not in closed_ids]
 
     return {
         "monitor_time": datetime.now(ET).strftime("%Y-%m-%d %H:%M ET"),
