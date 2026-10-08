@@ -859,19 +859,20 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             if use_telegram:
                 send_telegram(f"❌ SPY卖put价差检查失败：{str(e)[:200]}")
 
-    def _options_reprice():
-        """期权开仓单盘中改价（2026-10-01）：今天有未成交的开仓单才起子进程。"""
+    def _options_guard():
+        """期权盘中检查：开仓单改价（2026-10-01）+ 持仓止损/时间平仓、补挂止盈单（2026-10-07）。
+        今天有未成交开仓单或有持仓才起子进程。"""
         try:
-            from src.options_auto import has_pending_open_today, run_in_subprocess
-            if not has_pending_open_today():
+            from src.options_auto import needs_guard, run_in_subprocess
+            if not needs_guard():
                 return
-            r = run_in_subprocess(reprice_only=True)
+            r = run_in_subprocess(guard_only=True)
             for msg in r["msgs"]:
                 if use_telegram:
                     send_telegram(msg)
-            print(f"[OptionsReprice] {r['status']}")
+            print(f"[OptionsGuard] {r['status']}")
         except Exception as e:
-            print(f"[OptionsReprice] 运行失败：{e}")
+            print(f"[OptionsGuard] 运行失败：{e}")
 
     def _overnight_lab():
         """15:45 H4隔夜放量前向登记（只记录不下单）：先给昨天的记录填今天开盘价，再记今天的信号和对照。"""
@@ -917,9 +918,10 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
         (16, 20): ("failed_breakout_log", _failed_breakout_log),
         (16, 30): ("weekly_performance", _weekly_performance),
     }
-    # 期权开仓单改价：10:30挂单后约每30分钟一次，错开整点的盘中检查（同一分钟只能放一个任务）
-    for h, m in ((11, 5), (11, 35), (12, 5), (12, 35), (13, 5), (13, 35), (14, 10), (14, 35), (15, 5)):
-        SCHEDULE[(h, m)] = (f"options_reprice_{h:02d}{m:02d}", _options_reprice)
+    # 期权盘中检查（改价+止损+补挂止盈单）：约每30分钟一次，错开整点的盘中检查（同一分钟只能放一个任务）。
+    # 9:45那次是为了早点挂上止盈单（开盘头几分钟报价太宽，不放在9:30-9:35）
+    for h, m in ((9, 45), (11, 5), (11, 35), (12, 5), (12, 35), (13, 5), (13, 35), (14, 10), (14, 35), (15, 5)):
+        SCHEDULE[(h, m)] = (f"options_guard_{h:02d}{m:02d}", _options_guard)
 
     executed_today = load_executed(datetime.now(ET).strftime("%Y-%m-%d"))
     if executed_today:

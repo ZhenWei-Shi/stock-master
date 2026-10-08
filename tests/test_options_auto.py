@@ -394,3 +394,92 @@ def test_reprice_ignores_old_days(store):
     r = oa.reprice(client=c, now=oa.ET.localize(datetime(2026, 10, 1, 11, 5)), sleep=lambda s: None)
     assert len(c.orders) == 1 and r["status"] == "没有需要改价的挂单"
     assert oa.has_pending_open_today(date(2026, 10, 1)) is False
+
+
+# ── 止盈挂单 + 盘中检查（2026-10-07） ─────────────────────────
+
+Q_HOLD = {"SPY261104P00598000": {"bid": 1.20, "ask": 1.25}, "SPY261104P00596000": {"bid": 0.95, "ask": 1.00}}  # 平仓成本0.30
+Q_STOP = {"SPY261104P00598000": {"bid": 2.40, "ask": 2.50}, "SPY261104P00596000": {"bid": 1.10, "ask": 1.15}}  # 1.40≥0.44×3
+
+
+def _open_spy(client):
+    """9/30挂开仓单、成交（收入0.44），返回记录。"""
+    _pending_spy(client)
+    client.status["o1"] = "filled"
+    trades = oa._load()
+    trades[0].update(status="open", credit=0.44, opened="2026-09-30")
+    oa._save(trades)
+
+
+def _legs(o):
+    return {str(l.position_intent.value) for l in o.legs}
+
+
+def test_tp_order_placed_from_next_day(store):
+    c = RepriceClient()
+    _open_spy(c)
+    oa.run(today=TODAY, client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    assert len(c.orders) == 1                                          # 开仓当天不挂（PDT）
+    r = oa.guard(client=c, market=FakeMarket(ROWS, Q_HOLD), now=oa.ET.localize(datetime(2026, 10, 1, 9, 45)),
+                 sleep=lambda s: None)
+    tp = c.orders[1]
+    assert float(tp.limit_price) == 0.22 and _legs(tp) == {"buy_to_close", "sell_to_close"}   # 借方=0.44×50%
+    tr = oa._load()[0]
+    assert tr["tp_order_id"] == "o2" and tr["status"] == "open" and "挂止盈单借方$0.22" in r["status"]
+    oa.guard(client=c, market=FakeMarket(ROWS, Q_HOLD), now=oa.ET.localize(datetime(2026, 10, 1, 11, 5)),
+             sleep=lambda s: None)
+    assert len(c.orders) == 2                                          # 挂着就不重复挂
+
+
+def test_tp_fill_closes_and_expired_tp_is_replaced(store):
+    c = RepriceClient()
+    _open_spy(c)
+    oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    c.status["o2"] = "expired"                                         # 收盘失效 → 次日重挂
+    oa.run(today=date(2026, 10, 2), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    assert oa._load()[0]["tp_order_id"] == "o3" and len(c.orders) == 3
+    c.status["o3"] = "filled"
+    r = oa.run(today=date(2026, 10, 2), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    tr = oa._load()[0]
+    assert tr["status"] == "closed" and tr["exit_debit"] == 0.22 and tr["pnl"] == 22.0
+    assert "止盈挂单成交" in tr["close_reason"] and any("盈亏$+22" in m for m in r["msgs"])
+    assert len(c.orders) == 3
+
+
+def test_stop_cancels_tp_before_closing(store):
+    c = RepriceClient(cancel_after_polls=1)
+    _open_spy(c)
+    oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    r = oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 12, 5)),
+                 sleep=lambda s: None)
+    assert c.cancels == ["o2"] and len(c.orders) == 3
+    assert float(c.orders[2].limit_price) == 1.40
+    tr = oa._load()[0]
+    assert tr["status"] == "pending_close" and "止损" in tr["close_reason"] and "tp_order_id" not in tr
+    assert any("挂平仓单" in m for m in r["msgs"])
+
+
+def test_stop_skips_close_if_tp_filled_during_cancel(store):
+    c = RepriceClient(cancel_to="filled")
+    _open_spy(c)
+    oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 12, 5)),
+             sleep=lambda s: None)
+    tr = oa._load()[0]
+    assert len(c.orders) == 2 and tr["status"] == "closed" and tr["exit_debit"] == 0.22
+
+
+def test_stop_waits_if_tp_cancel_unconfirmed(store):
+    c = RepriceClient(cancel_after_polls=99)
+    _open_spy(c)
+    oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    r = oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 12, 5)),
+                 sleep=lambda s: None)
+    assert len(c.orders) == 2 and oa._load()[0]["status"] == "open" and "撤单未确认" in r["status"]
+
+
+def test_needs_guard(store):
+    assert oa.needs_guard(TODAY) is False
+    c = RepriceClient()
+    _open_spy(c)
+    assert oa.needs_guard(date(2026, 10, 5)) is True

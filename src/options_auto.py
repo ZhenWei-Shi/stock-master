@@ -37,11 +37,18 @@ ETF卖put价差自动开仓（2026-09-30新增，Alpaca模拟账户，前向实�
         止损：平仓成本 ≥ 收入×STOP_MULT（亏损约为收入的2倍）
         时间：剩余天数 ≤ EXIT_DTE
         开仓当天不平仓（账户<$25k，同日开平算一次日内交易，PDT限制）
+  止盈挂单 + 盘中检查（2026-10-07用户决定，IWM #2/SPY #4持仓期间改的）：原来只在10:30/15:30
+        各查一次，盘中平仓成本短暂摸到止盈线又弹回就会错过。改为：
+        ① 持仓（开仓次日起）挂一张当天有效的限价平仓单，借方 = 收入×TAKE_PROFIT，收盘失效后
+          下次检查重挂（Alpaca期权只支持DAY单）。止盈线不变，只是不再错过盘中触线
+        ② 止损/时间规则仍靠检查（Alpaca多腿单没有止损单），检查从每天2次加到约11次
+          （9:45、10:30、11:05-15:05约每30分钟、15:30）。要另下平仓单时先撤止盈挂单、
+          确认撤掉才下，避免两张平仓单都成交
 
 Alpaca多腿（mleg）限价单符号：正数=借方（付钱），负数=贷方（收钱）。Alpaca文档页
 没写，只在Python SDK参考里有；传成正数会把收钱的单当成付钱的单。
 
-用法：python -m src.options_auto [--dry-run] [--no-open] [--status] [--reprice]
+用法：python -m src.options_auto [--dry-run] [--no-open] [--status] [--reprice] [--guard]
 """
 import argparse
 import json
@@ -263,6 +270,11 @@ def next_limit(current: float, initial: float) -> float | None:
     return max(round(current - REPRICE_STEP, 2), floor)
 
 
+def tp_limit(tr: dict) -> float:
+    """止盈挂单的限价（每股借方），与exit_decision的止盈线同口径。"""
+    return round(tr["credit"] * TAKE_PROFIT, 2)
+
+
 def arm_of(tr: dict) -> str:
     return tr.get("arm", "control")   # 2026-09-30扫描上线前的记录都是SPY对照
 
@@ -369,13 +381,26 @@ def _sync_orders(client, trades: list, today: date) -> list:
     msgs = []
     for tr in trades:
         oid = tr.get("open_order_id") if tr["status"] == "pending_open" else \
-            tr.get("close_order_id") if tr["status"] == "pending_close" else None
+            tr.get("close_order_id") if tr["status"] == "pending_close" else \
+            tr.get("tp_order_id") if tr["status"] == "open" else None
         if not oid:
             continue
         o = client.get_order_by_id(oid)
         st = _order_status(o)
         px = abs(float(o.filled_avg_price)) if getattr(o, "filled_avg_price", None) else None
         tag = f"[{ARM_NAME[arm_of(tr)]}]"
+        if tr["status"] == "open":   # 止盈挂单
+            if st == "filled":
+                lim = tr.get("tp_limit", tp_limit(tr))
+                tr.update(status="closed", closed=today.isoformat(), close_order_id=oid,
+                          close_reason=f"止盈挂单成交（限价借方${lim:.2f}）",
+                          exit_debit=px if px is not None else lim)
+                tr["pnl"] = round((tr["credit"] - tr["exit_debit"]) * 100 * tr["qty"], 2)
+                msgs.append(f"🧾 <b>卖put价差平仓</b>{tag} {_label(tr)}\n{tr['close_reason']}\n"
+                            f"收入${tr['credit']:.2f} − 平仓${tr['exit_debit']:.2f} → 盈亏${tr['pnl']:+.0f}")
+            elif st in _FINAL:
+                tr.pop("tp_order_id", None)   # 收盘失效等，下次检查重挂
+            continue
         if st == "filled" and tr["status"] == "pending_open":
             filled = getattr(o, "filled_at", None)
             tr.update(status="open", credit=px if px is not None else tr["planned_credit"],
@@ -427,9 +452,56 @@ def _open(client, trades: list, cand: dict, arm: str, vix, acct_value: float, to
             f"最大亏损${plan['max_loss']:.0f}；IV/RV {cand['iv_rv']}，VIX {vix}")
 
 
+def _cancel_tp(client, tr: dict, sleep) -> bool:
+    """撤掉止盈挂单。True=没有挂单或已确认撤掉，可以另下平仓单；False=撤单期间成交或状态不明。"""
+    oid = tr.get("tp_order_id")
+    if not oid:
+        return True
+    st = _cancel_and_wait(client, oid, sleep)
+    if st in _FINAL and st != "filled":
+        tr.pop("tp_order_id", None)
+        return True
+    return False
+
+
+def _check_exits(client, market, trades: list, today: date, sleep, dry_run: bool = False) -> tuple:
+    """持仓逐笔：该平就（先撤止盈挂单再）挂平仓单；不平就确保止盈挂单在。返回 (msgs, notes)。"""
+    msgs, notes = [], []
+    for tr in [t for t in trades if t["status"] == "open"]:
+        q = market.quotes([tr["short_sym"], tr["long_sym"]])
+        debit = close_debit(q.get(tr["short_sym"]), q.get(tr["long_sym"]))
+        d = exit_decision(tr, debit, today)
+        tr["last_check"] = {"date": today.isoformat(), "close_debit": debit}
+        notes.append(f"{_label(tr)}：{d['reason']}")
+        if dry_run:
+            if d["action"] == "close" and debit is not None:
+                msgs.append(f"[空跑] 会平仓{_label(tr)}：{d['reason']}")
+            continue
+        if d["action"] == "close" and debit is not None:
+            if not _cancel_tp(client, tr, sleep):
+                msgs += _sync_orders(client, [tr], today)   # 撤单时止盈挂单刚好成交
+                if tr["status"] == "open":
+                    notes.append(f"{_label(tr)}：止盈挂单撤单未确认，本次不另下平仓单")
+                continue
+            o = _submit_mleg(client, [(tr["short_sym"], "buy", "BUY_TO_CLOSE"),
+                                      (tr["long_sym"], "sell", "SELL_TO_CLOSE")], debit, tr["qty"])
+            tr.update(status="pending_close", close_order_id=str(o.id), close_reason=d["reason"],
+                      planned_exit_debit=debit)
+            msgs.append(f"📤 卖put价差挂平仓单[{ARM_NAME[arm_of(tr)]}] {_label(tr)}：{d['reason']}，限价借方${debit:.2f}")
+        elif not tr.get("tp_order_id") and tr.get("opened") != today.isoformat():   # 开仓当天不挂（PDT）
+            lim = tp_limit(tr)
+            o = _submit_mleg(client, [(tr["short_sym"], "buy", "BUY_TO_CLOSE"),
+                                      (tr["long_sym"], "sell", "SELL_TO_CLOSE")], lim, tr["qty"])
+            tr.update(tp_order_id=str(o.id), tp_limit=lim)
+            notes.append(f"{_label(tr)}：挂止盈单借方${lim:.2f}")
+    return msgs, notes
+
+
 def run(dry_run: bool = False, allow_open: bool = True, today: date | None = None,
-        client=None, market=None) -> dict:
-    """一次检查：同步挂单 → 按规则平仓 → 空出的仓位按规则开仓。返回 {"msgs", "status"}。"""
+        client=None, market=None, sleep=None) -> dict:
+    """一次检查：同步挂单 → 按规则平仓/补挂止盈单 → 空出的仓位按规则开仓。返回 {"msgs", "status"}。"""
+    import time
+    sleep = sleep or time.sleep
     today = today or datetime.now(ET).date()
     client = client or alpaca_client.paper_trading_client()
     if client is None:
@@ -439,22 +511,9 @@ def run(dry_run: bool = False, allow_open: bool = True, today: date | None = Non
     msgs = [] if dry_run else _sync_orders(client, trades, today)
     notes = []
 
-    for tr in (t for t in trades if t["status"] == "open"):
-        q = market.quotes([tr["short_sym"], tr["long_sym"]])
-        debit = close_debit(q.get(tr["short_sym"]), q.get(tr["long_sym"]))
-        d = exit_decision(tr, debit, today)
-        tr["last_check"] = {"date": today.isoformat(), "close_debit": debit}
-        notes.append(f"{_label(tr)}：{d['reason']}")
-        if d["action"] != "close" or debit is None:
-            continue
-        if dry_run:
-            msgs.append(f"[空跑] 会平仓{_label(tr)}：{d['reason']}")
-            continue
-        o = _submit_mleg(client, [(tr["short_sym"], "buy", "BUY_TO_CLOSE"),
-                                  (tr["long_sym"], "sell", "SELL_TO_CLOSE")], debit, tr["qty"])
-        tr.update(status="pending_close", close_order_id=str(o.id), close_reason=d["reason"],
-                  planned_exit_debit=debit)
-        msgs.append(f"📤 卖put价差挂平仓单[{ARM_NAME[arm_of(tr)]}] {_label(tr)}：{d['reason']}，限价借方${debit:.2f}")
+    m, n = _check_exits(client, market, trades, today, sleep, dry_run)
+    msgs += m
+    notes += n
 
     active = [t for t in trades if t["status"] in ACTIVE]
     free_arms = [a for a in ("control", "scan") if not any(arm_of(t) == a for t in active)]
@@ -586,10 +645,34 @@ def reprice(client=None, now: datetime | None = None, sleep=None) -> dict:
     return {"msgs": msgs, "status": "；".join(notes) or "没有需要改价的挂单"}
 
 
+def guard(client=None, market=None, now: datetime | None = None, sleep=None) -> dict:
+    """盘中检查（2026-10-07起）：开仓单改价 + 持仓按规则止损/时间平仓、补挂止盈单。"""
+    import time
+    sleep = sleep or time.sleep
+    now = now or datetime.now(ET)
+    client = client or alpaca_client.paper_trading_client()
+    if client is None:
+        return {"msgs": [], "status": "未配置ALPACA密钥，跳过"}
+    r = reprice(client=client, now=now, sleep=sleep)
+    notes = [] if r["status"] == "没有需要改价的挂单" else [r["status"]]
+    trades = _load()
+    if any(t["status"] == "open" for t in trades):
+        m, n = _check_exits(client, market or AlpacaMarket(), trades, now.date(), sleep)
+        r["msgs"] += m
+        notes += n
+        _save(trades)
+    return {"msgs": r["msgs"], "status": "；".join(notes) or "无挂单、无持仓"}
+
+
 def has_pending_open_today(today: date | None = None) -> bool:
-    """scheduler用：今天有没有未成交的开仓单（没有就不起子进程）。"""
+    """今天有没有未成交的开仓单。"""
     today = today or datetime.now(ET).date()
     return any(t["status"] == "pending_open" and t.get("submitted") == today.isoformat() for t in _load())
+
+
+def needs_guard(today: date | None = None) -> bool:
+    """scheduler用：今天有未成交开仓单、或有持仓/平仓挂单才起子进程。"""
+    return has_pending_open_today(today) or any(t["status"] in ("open", "pending_close") for t in _load())
 
 
 def _label_plan(c: dict) -> str:
@@ -638,12 +721,12 @@ def weekly_summary(trades: list | None = None) -> str:
     return "\n".join(lines)
 
 
-def run_in_subprocess(allow_open: bool = True, timeout: int = 600, reprice_only: bool = False) -> dict:
+def run_in_subprocess(allow_open: bool = True, timeout: int = 600, guard_only: bool = False) -> dict:
     """供scheduler调用：子进程运行，alpaca-py/yfinance不常驻scheduler内存。"""
     import subprocess
     root = os.path.join(os.path.dirname(__file__), "..")
     args = ([sys.executable, "-m", "src.options_auto", "--json"] + ([] if allow_open else ["--no-open"])
-            + (["--reprice"] if reprice_only else []))
+            + (["--guard"] if guard_only else []))
     r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=timeout,
                        env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     if r.returncode != 0:
@@ -659,7 +742,12 @@ if __name__ == "__main__":
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--json", action="store_true", help="最后一行输出JSON（供scheduler解析）")
     ap.add_argument("--reprice", action="store_true", help="只给当天未成交的开仓单改价重挂")
+    ap.add_argument("--guard", action="store_true", help="盘中检查：改价 + 止损/时间平仓 + 补挂止盈单")
     a = ap.parse_args()
+    if a.guard:
+        res = guard()
+        print(json.dumps(res, ensure_ascii=False) if a.json else "\n".join(res["msgs"] + [res["status"]]))
+        sys.exit(0)
     if a.status:
         print(status_line())
         sys.exit(0)
