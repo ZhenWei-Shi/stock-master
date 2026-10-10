@@ -182,6 +182,8 @@ IWM = [_row(100, 2.0, 2.1, -0.5, root="IWM", iv=0.12), _row(92, 0.80, 0.83, -0.2
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(oa, "_FILE", str(tmp_path / "auto.json"))
     monkeypatch.setattr(oa, "_SCAN_LOG", str(tmp_path / "scan.json"))
+    import src.options_shadow as osh
+    monkeypatch.setattr(osh, "_FILE", str(tmp_path / "shadow.json"))
 
 
 def test_open_sends_negative_credit_limit(store):
