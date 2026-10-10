@@ -50,6 +50,12 @@ class TestRecordDayTradeConcurrency:
         import src.pdt_guard as pdt
         monkeypatch.setattr(pdt, "_DB", str(tmp_path / "pdt_log.json"))
 
+        class _Fri(pdt.date):   # 固定在交易日：周末跑时滚动窗口会跳过当天，计数为0
+            @classmethod
+            def today(cls):
+                return cls(2026, 10, 9)
+        monkeypatch.setattr(pdt, "date", _Fri)
+
         for _ in range(3):
             pdt.record_day_trade("AAPL")
 

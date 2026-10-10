@@ -98,7 +98,13 @@ class TestRun:
     def test_records_trigger_and_is_idempotent(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fbl, "_LOG_FILE", str(tmp_path / "log.json"))
         monkeypatch.setattr(fbl, "RESEARCH_UNIVERSE", [])
-        today = datetime.now(fbl.ET).strftime("%Y-%m-%d")
+
+        class _Fri(fbl.datetime):   # 固定在交易日：周末跑时最后一根K线不是"今天"，不会记录
+            @classmethod
+            def now(cls, tz=None):
+                return fbl.ET.localize(cls(2026, 10, 9, 15, 0))
+        monkeypatch.setattr(fbl, "datetime", _Fri)
+        today = fbl.datetime.now(fbl.ET).strftime("%Y-%m-%d")
         idx = pd.bdate_range(end=today, periods=30)
         highs = [50.0] * 29 + [53.5]
         closes = [49.0] * 29 + [49.5]
