@@ -898,6 +898,19 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
             print(f"[Momentum] 换仓失败：{e}")
             if use_telegram:
                 send_telegram(f"❌ 月度动量换仓失败：{str(e)[:200]}")
+        # 行业ETF动量账本（对照组，2026-10-30起）：跟在动量账本后面，失败互不影响
+        try:
+            from src.etf_momentum_book import rebalance as etf_rebalance, format_rebalance as etf_format
+            r = etf_rebalance()
+            msg = etf_format(r)
+            if msg:
+                print(f"[EtfMomentum] 持仓{r.get('targets')} 成本${r.get('cost')}")
+                if use_telegram:
+                    send_telegram(msg)
+        except Exception as e:
+            print(f"[EtfMomentum] 换仓失败：{e}")
+            if use_telegram:
+                send_telegram(f"❌ 行业ETF动量账本换仓失败：{str(e)[:200]}")
 
     SCHEDULE = {
         (9,   0): ("macro_refresh",   _macro_refresh),
