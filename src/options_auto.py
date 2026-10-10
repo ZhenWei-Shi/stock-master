@@ -233,7 +233,7 @@ def _pick_for_expiry(rows: list, expiry: date, spot: float, today: date, account
                     "short_sym": short["symbol"], "long_sym": long["symbol"],
                     "short_strike": short["strike"], "long_strike": long["strike"], "width": w,
                     "credit": credit, "qty": qty, "max_loss": round(max_loss * qty, 2),
-                    "short_delta": round(delta, 3)}
+                    "short_delta": round(delta, 3), "mid": round(mid, 4)}
     return {"ok": False, "note": f"卖{short['strike']:g}P（delta {delta:.2f}）没有合格宽度：" + "；".join(tried)}
 
 
@@ -445,7 +445,7 @@ def _candidate(market, sym: str, today: date, acct_value: float, bp: float | Non
     iv = atm_iv(rows, u["spot"], exp, today) if exp else None
     iv_rv = round(iv / u["rv20"], 2) if iv and u["rv20"] else None
     return {"underlying": sym, **u, "iv": round(iv, 4) if iv else None, "iv_rv": iv_rv,
-            "plan": pick_spread(rows, u["spot"], today, acct_value, bp)}
+            "plan": pick_spread(rows, u["spot"], today, acct_value, bp), "rows": rows}   # rows供影子样本重选
 
 
 def _open(client, trades: list, cand: dict, arm: str, vix, acct_value: float, today: date) -> str:
@@ -531,6 +531,8 @@ def run(dry_run: bool = False, allow_open: bool = True, today: date | None = Non
     m, n = _check_exits(client, market, trades, today, sleep, dry_run)
     msgs += m
     notes += n
+    if not dry_run:
+        notes += _shadow(lambda sh: sh.check_all(market, today))
 
     active = [t for t in trades if t["status"] in ACTIVE]
     free_arms = [a for a in ("control", "scan") if not any(arm_of(t) == a for t in active)]
@@ -549,9 +551,10 @@ def run(dry_run: bool = False, allow_open: bool = True, today: date | None = Non
             bp = float(bp) if bp is not None else None
             held = {t["underlying"] for t in active}
             opened_msgs = []
+            spy_c = None
 
             if "control" in free_arms and CONTROL not in held:
-                c = _candidate(market, CONTROL, today, value, bp)
+                c = spy_c = _candidate(market, CONTROL, today, value, bp)
                 if not c["plan"]["ok"]:
                     notes.append(f"对照SPY不开：{c['plan']['note']}")
                 elif dry_run:
@@ -588,6 +591,16 @@ def run(dry_run: bool = False, allow_open: bool = True, today: date | None = Non
                 else:
                     opened_msgs.append(_open(client, trades, ranked[0], "scan", vix, value, today))
             msgs += opened_msgs
+            if not dry_run:   # 影子样本（2026-10-12起）：每天按同样规则假想开仓，只记账
+                def _shadow_open(sh):
+                    sc = spy_c
+                    if sc is None:
+                        try:
+                            sc = _candidate(market, CONTROL, today, value, None)
+                        except Exception:
+                            sc = None
+                    return sh.open_daily(sc, scan, value, vix, today)
+                notes += _shadow(_shadow_open)
     if not dry_run:
         _save(trades)
     return {"msgs": msgs, "status": "；".join(notes) or status_line(trades)}
@@ -673,12 +686,23 @@ def guard(client=None, market=None, now: datetime | None = None, sleep=None) -> 
     r = reprice(client=client, now=now, sleep=sleep)
     notes = [] if r["status"] == "没有需要改价的挂单" else [r["status"]]
     trades = _load()
+    market = market or AlpacaMarket()
     if any(t["status"] == "open" for t in trades):
-        m, n = _check_exits(client, market or AlpacaMarket(), trades, now.date(), sleep)
+        m, n = _check_exits(client, market, trades, now.date(), sleep)
         r["msgs"] += m
         notes += n
         _save(trades)
+    notes += _shadow(lambda sh: sh.check_all(market, now.date()) if sh.has_open() else [])
     return {"msgs": r["msgs"], "status": "；".join(notes) or "无挂单、无持仓"}
+
+
+def _shadow(fn) -> list:
+    """调用影子样本；出错只记一条说明，不影响真实仓位。"""
+    try:
+        from . import options_shadow
+        return fn(options_shadow)
+    except Exception as e:
+        return [f"影子样本出错：{str(e)[:100]}"]
 
 
 def has_pending_open_today(today: date | None = None) -> bool:
@@ -689,7 +713,9 @@ def has_pending_open_today(today: date | None = None) -> bool:
 
 def needs_guard(today: date | None = None) -> bool:
     """scheduler用：今天有未成交开仓单、或有持仓/平仓挂单才起子进程。"""
-    return has_pending_open_today(today) or any(t["status"] in ("open", "pending_close") for t in _load())
+    from .options_shadow import has_open
+    return (has_pending_open_today(today) or any(t["status"] in ("open", "pending_close") for t in _load())
+            or has_open())
 
 
 def _label_plan(c: dict) -> str:
@@ -735,6 +761,7 @@ def weekly_summary(trades: list | None = None) -> str:
             wins = sum(1 for x in pnl if x > 0)
             parts.append(f"已平{len(closed)}笔，胜{wins}，累计${sum(pnl):+.0f}，每笔均${sum(pnl) / len(pnl):+.1f}")
         lines.append(head + ("；".join(parts) if parts else "无持仓、未平过仓"))
+    lines += _shadow(lambda sh: [sh.summarize()])
     return "\n".join(lines)
 
 
