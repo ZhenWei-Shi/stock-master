@@ -44,6 +44,11 @@ ETF卖put价差自动开仓（2026-09-30新增，Alpaca模拟账户，前向实�
         ② 止损/时间规则仍靠检查（Alpaca多腿单没有止损单），检查从每天2次加到约11次
           （9:45、10:30、11:05-15:05约每30分钟、15:30）。要另下平仓单时先撤止盈挂单、
           确认撤掉才下，避免两张平仓单都成交
+  止损连续两次确认（2026-10-10用户决定，IWM #2/SPY #4持仓期间改的，还没有任何一笔平仓）：
+        10/8 SPY #4平仓成本30分钟内$0.29→$0.61→$0.37，SPY本身没这么大波动，是免费档
+        指示性报价的卖出腿ask在跳。单次快照超线就平仓，假报价会把没事的仓位实亏平掉。
+        改为连续两次检查都≥止损线才平（记在trade的stop_breach）；中间取不到报价不算中断，
+        回到线下就清零。止损线本身不变，止盈/时间规则不变
 
 Alpaca多腿（mleg）限价单符号：正数=借方（付钱），负数=贷方（收钱）。Alpaca文档页
 没写，只在Python SDK参考里有；传成正数会把收钱的单当成付钱的单。
@@ -245,18 +250,28 @@ def close_debit(q_short: dict | None, q_long: dict | None) -> float | None:
     return round(max(0.0, q_short["ask"] - (q_long.get("bid") or 0)), 2)
 
 
-def exit_decision(tr: dict, debit: float | None, today: date) -> dict:
-    """按登记的平仓规则判断（纯函数）。返回 {"action": "hold"/"close", "reason"}。"""
+def stop_breached(tr: dict, debit: float | None) -> bool:
+    """平仓成本是否≥止损线（纯函数）。"""
+    return debit is not None and debit >= round(tr["credit"] * STOP_MULT, 2)
+
+
+def exit_decision(tr: dict, debit: float | None, today: date, prior_breach: bool = False) -> dict:
+    """按登记的平仓规则判断（纯函数）。prior_breach=上一次检查已超止损线。
+    返回 {"action": "hold"/"close", "reason"}。"""
     if tr.get("opened") == today.isoformat():
         return {"action": "hold", "reason": "开仓当天不平（PDT）"}
     dte = (date.fromisoformat(tr["expiry"]) - today).days
     credit = tr["credit"]
     if debit is not None and debit <= round(credit * TAKE_PROFIT, 2):
         return {"action": "close", "reason": f"止盈：平仓成本${debit:.2f}≤收入${credit:.2f}的{TAKE_PROFIT:.0%}"}
-    if debit is not None and debit >= round(credit * STOP_MULT, 2):
-        return {"action": "close", "reason": f"止损：平仓成本${debit:.2f}≥收入${credit:.2f}的{STOP_MULT:g}倍"}
+    breach = stop_breached(tr, debit)
+    if breach and prior_breach:
+        return {"action": "close",
+                "reason": f"止损：平仓成本${debit:.2f}≥收入${credit:.2f}的{STOP_MULT:g}倍（连续两次）"}
     if dte <= EXIT_DTE:
         return {"action": "close", "reason": f"时间：剩{dte}天≤{EXIT_DTE}天"}
+    if breach:
+        return {"action": "hold", "reason": f"平仓成本${debit:.2f}首次超止损线，下次检查仍超线才平"}
     if debit is None:
         return {"action": "hold", "reason": "取不到报价"}
     return {"action": "hold", "reason": f"平仓成本${debit:.2f}，剩{dte}天"}
@@ -470,8 +485,10 @@ def _check_exits(client, market, trades: list, today: date, sleep, dry_run: bool
     for tr in [t for t in trades if t["status"] == "open"]:
         q = market.quotes([tr["short_sym"], tr["long_sym"]])
         debit = close_debit(q.get(tr["short_sym"]), q.get(tr["long_sym"]))
-        d = exit_decision(tr, debit, today)
+        d = exit_decision(tr, debit, today, prior_breach=tr.get("stop_breach", False))
         tr["last_check"] = {"date": today.isoformat(), "close_debit": debit}
+        if debit is not None:   # 取不到报价不算中断，也不算超线
+            tr["stop_breach"] = stop_breached(tr, debit)
         notes.append(f"{_label(tr)}：{d['reason']}")
         if dry_run:
             if d["action"] == "close" and debit is not None:

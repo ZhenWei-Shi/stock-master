@@ -106,7 +106,9 @@ class TestExit:
     def test_rules(self):
         d = lambda debit, day: oa.exit_decision(self.TR, debit, day)["action"]
         assert d(0.20, date(2026, 10, 5)) == "close"          # 止盈50%
-        assert d(1.20, date(2026, 10, 5)) == "close"          # 止损3倍
+        assert d(1.20, date(2026, 10, 5)) == "hold"           # 止损3倍：首次超线先不平
+        assert oa.exit_decision(self.TR, 1.20, date(2026, 10, 5), prior_breach=True)["action"] == "close"
+        assert oa.exit_decision(self.TR, 1.20, date(2026, 10, 14))["action"] == "close"   # 首次超线但到期限
         assert d(0.30, date(2026, 10, 14)) == "close"         # 剩21天
         assert d(0.30, date(2026, 10, 5)) == "hold"
         assert d(None, date(2026, 10, 5)) == "hold"
@@ -450,6 +452,9 @@ def test_stop_cancels_tp_before_closing(store):
     c = RepriceClient(cancel_after_polls=1)
     _open_spy(c)
     oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    r = oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 11, 35)),
+                 sleep=lambda s: None)
+    assert c.cancels == [] and len(c.orders) == 2 and "首次超止损线" in r["status"]   # 首次超线不平
     r = oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 12, 5)),
                  sleep=lambda s: None)
     assert c.cancels == ["o2"] and len(c.orders) == 3
@@ -463,8 +468,9 @@ def test_stop_skips_close_if_tp_filled_during_cancel(store):
     c = RepriceClient(cancel_to="filled")
     _open_spy(c)
     oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
-    oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 12, 5)),
-             sleep=lambda s: None)
+    for hm in ((11, 35), (12, 5)):
+        oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, *hm)),
+                 sleep=lambda s: None)
     tr = oa._load()[0]
     assert len(c.orders) == 2 and tr["status"] == "closed" and tr["exit_debit"] == 0.22
 
@@ -473,6 +479,8 @@ def test_stop_waits_if_tp_cancel_unconfirmed(store):
     c = RepriceClient(cancel_after_polls=99)
     _open_spy(c)
     oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 11, 35)),
+             sleep=lambda s: None)                                     # 首次超线
     r = oa.guard(client=c, market=FakeMarket(ROWS, Q_STOP), now=oa.ET.localize(datetime(2026, 10, 1, 12, 5)),
                  sleep=lambda s: None)
     assert len(c.orders) == 2 and oa._load()[0]["status"] == "open" and "撤单未确认" in r["status"]
@@ -483,3 +491,21 @@ def test_needs_guard(store):
     c = RepriceClient()
     _open_spy(c)
     assert oa.needs_guard(date(2026, 10, 5)) is True
+
+
+def test_stop_spike_then_recover_resets(store):
+    """2026-10-10：单次假报价超线、下次回到线下 → 不平仓，计数清零；取不到报价不算中断。"""
+    c = RepriceClient()
+    _open_spy(c)
+    oa.run(today=date(2026, 10, 1), client=c, market=FakeMarket(ROWS, Q_HOLD), allow_open=False)
+    g = lambda q, hm: oa.guard(client=c, market=FakeMarket(ROWS, q), now=oa.ET.localize(datetime(2026, 10, 1, *hm)),
+                               sleep=lambda s: None)
+    g(Q_STOP, (11, 5))
+    assert oa._load()[0]["stop_breach"] is True
+    g(Q_HOLD, (11, 35))
+    assert oa._load()[0]["stop_breach"] is False and len(c.orders) == 2
+    g(Q_STOP, (12, 5))
+    g({}, (12, 35))                                                    # 取不到报价
+    assert oa._load()[0]["status"] == "open" and oa._load()[0]["stop_breach"] is True
+    g(Q_STOP, (13, 5))
+    assert oa._load()[0]["status"] == "pending_close"
