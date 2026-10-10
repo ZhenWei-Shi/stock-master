@@ -14,6 +14,13 @@
   - 成本：每笔往返扣COST_ROUNDTRIP（10bp）
   - 判定：≥MIN_TRADES笔后，扣成本平均收益>0且t>2才算成立；对照组用来确认不是市场整体隔夜上涨
 
+扩池（2026-10-10用户决定，PR#52，POOL_V2_START起生效）：原股票池约91只，9个交易日只出5笔信号，
+  攒满200笔约需1.5年。股票池改为原池 ∪ 标普500 ∪ 纳指100（universe_large，约530只）；量比门槛、
+  每天前TOP_K只、对照、成本、判定标准都不变。近6个月日线估算：封顶5只后每天约3.7笔（旧池约1.1笔），
+  按15:45成交量偏少折算，200笔约3-5个月。
+  - 新记录带pool="v2"；**判定只用v2样本**（POOL_V2_START起），v1（9/29-10/9旧池）单独列出、不参与判定
+  - 约530只的下载放在子进程里跑（run_in_subprocess），避免撑大常驻scheduler的内存
+
 用法：python -m src.overnight_lab [--summary]
 """
 import json
@@ -34,6 +41,7 @@ RVOL_MIN = 1.8
 TOP_K = 5
 COST_ROUNDTRIP = 0.0010
 MIN_TRADES = 200
+POOL_V2_START = "2026-10-12"
 
 
 def detect(closes: pd.DataFrame, volumes: pd.DataFrame, top_k: int = TOP_K) -> tuple:
@@ -95,12 +103,18 @@ def _download(tickers: list) -> pd.DataFrame:
     return yf.download(tickers, period="2mo", auto_adjust=False, progress=False, threads=True)
 
 
+def pool(watchlist: list | None = None) -> list:
+    """原股票池（同月度动量，去掉ETF）∪ 标普500 ∪ 纳指100。"""
+    from .momentum_book import universe
+    from .universe_large import large_cap_universe
+    return sorted(set(universe(watchlist)) | set(large_cap_universe()))
+
+
 def run_overnight_lab(watchlist: list | None = None, download=None, today: date | None = None) -> dict:
     """每天15:45：先给昨天的记录填开盘价，再记录今天的信号和对照。"""
-    from .momentum_book import universe
     today = today or datetime.now(ET).date()
     download = download or _download
-    raw = download(universe(watchlist))
+    raw = download(pool(watchlist))
     closes, volumes, opens = raw["Close"], raw["Volume"], raw["Open"]
     last_day = closes.index[-1].date() if hasattr(closes.index[-1], "date") else closes.index[-1]
 
@@ -120,11 +134,11 @@ def run_overnight_lab(watchlist: list | None = None, download=None, today: date 
     new = []
     for t, rvol, px in signals:
         state["trades"].append({"date": today.isoformat(), "at": now, "ticker": t, "group": "signal",
-                                "rvol": rvol, "entry": px, "exit": None})
+                                "rvol": rvol, "entry": px, "exit": None, "pool": "v2"})
         new.append(t)
     for t in controls:
         state["trades"].append({"date": today.isoformat(), "at": now, "ticker": str(t), "group": "control",
-                                "entry": round(float(closes[t].iloc[-1]), 4), "exit": None})
+                                "entry": round(float(closes[t].iloc[-1]), 4), "exit": None, "pool": "v2"})
     _save(state)
     return {"ok": True, "filled": filled, "new": new, "controls": [str(t) for t in controls]}
 
@@ -139,17 +153,44 @@ def _mt(xs):
 
 
 def summarize(state: dict | None = None) -> str:
+    """判定只用扩池后的v2样本；扩池前的v1单独列出。"""
     state = state or _load()
-    sig = [t.get("ret") for t in state["trades"] if t["group"] == "signal"]
-    ctl = [t.get("ret") for t in state["trades"] if t["group"] == "control"]
-    n, m, tt = _mt(sig)
-    nc, mc, _ = _mt(ctl)
     f = lambda x: "—" if x is None else f"{x * 100:+.3f}%"
+    v2 = [t for t in state["trades"] if t.get("pool") == "v2"]
+    v1 = [t for t in state["trades"] if t.get("pool") != "v2"]
+    n, m, tt = _mt([t.get("ret") for t in v2 if t["group"] == "signal"])
+    nc, mc, _ = _mt([t.get("ret") for t in v2 if t["group"] == "control"])
+    n1, m1, _ = _mt([t.get("ret") for t in v1 if t["group"] == "signal"])
     verdict = (f"样本未满{MIN_TRADES}，不下结论" if n < MIN_TRADES else
                ("✅ 按事先标准成立" if (m or 0) > 0 and (tt or 0) > 2 else "❌ 按事先标准不成立"))
-    return (f"H4 隔夜放量（收盘前买、次日开盘卖）：{n}笔 平均{f(m)}（已扣成本） "
-            f"t={'—' if tt is None else f'{tt:+.1f}'}  对照{nc}笔 平均{f(mc)}  {verdict}")
+    return (f"H4 隔夜放量（收盘前买、次日开盘卖，{POOL_V2_START}起约530只池）：{n}笔 平均{f(m)}（已扣成本） "
+            f"t={'—' if tt is None else f'{tt:+.1f}'}  对照{nc}笔 平均{f(mc)}  {verdict}"
+            + (f"｜扩池前旧池{n1}笔 平均{f(m1)}（不参与判定）" if n1 else ""))
+
+
+def format_result(r: dict) -> str:
+    return (f"填开盘价{r['filled']}笔，今日信号{r['new']}，对照{r.get('controls', [])}"
+            + (f"（{r['note']}）" if r.get("note") else ""))
+
+
+def run_in_subprocess(watchlist: list | None = None, timeout: int = 600) -> str:
+    """供scheduler调用：约530只的日线下载放在子进程里，跑完退出释放内存（做法同event_lab）。"""
+    import subprocess
+    root = os.path.join(os.path.dirname(__file__), "..")
+    args = [sys.executable, "-m", "src.overnight_lab"]
+    if watchlist:
+        args += ["--watchlist", ",".join(watchlist)]
+    r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=timeout,
+                       env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    if r.returncode != 0:
+        tail = (r.stderr or "").strip().splitlines()
+        raise RuntimeError(tail[-1] if tail else f"exit {r.returncode}")
+    return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
 
 
 if __name__ == "__main__":
-    print(summarize() if "--summary" in sys.argv else run_overnight_lab())
+    if "--summary" in sys.argv:
+        print(summarize())
+    else:
+        wl = sys.argv[sys.argv.index("--watchlist") + 1].split(",") if "--watchlist" in sys.argv else None
+        print(format_result(run_overnight_lab(wl)))
