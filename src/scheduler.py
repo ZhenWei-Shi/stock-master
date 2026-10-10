@@ -877,10 +877,8 @@ def run_scheduler(watchlist: list, account: float, mode: str = "paper",
     def _overnight_lab():
         """15:45 H4隔夜放量前向登记（只记录不下单）：先给昨天的记录填今天开盘价，再记今天的信号和对照。"""
         try:
-            from src.overnight_lab import run_overnight_lab
-            r = run_overnight_lab(_latest_watchlist())
-            print(f"[Overnight] 填开盘价{r['filled']}笔，今日信号{r['new']}，对照{r.get('controls', [])}"
-                  + (f"（{r['note']}）" if r.get("note") else ""))
+            from src.overnight_lab import run_in_subprocess   # 约530只，子进程跑（PR#52）
+            print(f"[Overnight] {run_in_subprocess(_latest_watchlist())}")
         except Exception as e:
             print(f"[Overnight] 运行失败：{e}")
 
