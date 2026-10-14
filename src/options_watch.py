@@ -14,6 +14,7 @@ wiki stock-master/options-log 里的纸上期权价差原来靠人盯，平仓�
 只记账、不下单。用法：python -m src.options_watch [--status]
 """
 import json
+import math
 import os
 import sys
 from datetime import date, datetime
@@ -65,23 +66,53 @@ def evaluate(tr: dict, today: date, close: float, vol_ratio: float | None, quote
     quotes: {"long_bid","long_ask","short_bid","short_ask"}，取不到时为None。
     返回 {"action": "hold"/"close", "reason", "exit_value", "mark_natural", "mark_mid"}。
     """
-    out = {"action": "hold", "reason": "", "exit_value": None, "mark_natural": None, "mark_mid": None}
+    out = {"action": "hold", "reason": "", "exit_value": None, "mark_natural": None, "mark_mid": None,
+           "quote_issue": None, "raw_mark_natural": None, "raw_mark_mid": None}
+    issue = "缺少两腿报价"
     if quotes:
-        out["mark_natural"] = round(quotes["long_bid"] - quotes["short_ask"], 2)
-        out["mark_mid"] = round((quotes["long_bid"] + quotes["long_ask"]) / 2
-                                - (quotes["short_bid"] + quotes["short_ask"]) / 2, 2)
+        try:
+            lb, la, sb, sa = (float(quotes[k]) for k in ["long_bid", "long_ask", "short_bid", "short_ask"])
+            width = abs(tr["long_strike"] - tr["short_strike"])
+            natural, mid = lb - sa, (lb + la - sb - sa) / 2
+            issue = None
+            if not all(math.isfinite(x) and x >= 0 for x in [lb, la, sb, sa]):
+                issue = "腿报价含非法数值"
+            elif lb > la or sb > sa:
+                issue = "腿报价买卖倒挂"
+            else:
+                out["raw_mark_natural"], out["raw_mark_mid"] = round(natural, 2), round(mid, 2)
+                if natural < 0 or natural > width + 0.01 or mid < 0 or mid > width + 0.01:
+                    issue = "价差标记超出零至宽度范围"
+            if quotes.get("source") == "cboe":
+                stamp = quotes.get("quote_timestamp")
+                try:
+                    if not stamp or datetime.fromisoformat(stamp).date() != today:
+                        issue = "CBOE报价日期未知或不是检查当日"
+                except (TypeError, ValueError):
+                    issue = "CBOE报价时间无法解析"
+            if issue is None:
+                out["mark_natural"], out["mark_mid"] = round(natural, 2), round(mid, 2)
+        except (KeyError, TypeError, ValueError):
+            issue = "腿报价字段缺失或格式错误"
+    out["quote_issue"] = issue
     expiry = date.fromisoformat(tr["expiry"])
+    if not math.isfinite(close) or close < 0:
+        return {**out, "action": "review", "reason": "标的收盘价非法，不能确认结算"}
     if today >= expiry:
         v = round(intrinsic(tr, close), 2)
         return {**out, "action": "close", "reason": f"到期结算（{tr['underlying']}收盘${close:.2f}）", "exit_value": v}
     if (close > tr["invalidate_close_above"] and vol_ratio is not None
             and vol_ratio >= tr["invalidate_vol_ratio"]):
+        if issue:
+            return {**out, "action": "review", "reason": f"失效条件已触发，但{issue}，待核实平仓价值"}
         return {**out, "action": "close", "exit_value": out["mark_natural"],
                 "reason": f"失效条件：收盘${close:.2f}>{tr['invalidate_close_above']}且量比{vol_ratio:.1f}x"}
     if today >= date.fromisoformat(tr["time_exit"]):
         target = tr["debit"] * (1 + tr["min_profit_pct"])
         mark = out["mark_natural"]
-        if mark is None or mark < target:
+        if issue:
+            return {**out, "action": "review", "reason": f"已到时间检查日，但{issue}，不能确认时间退出或盈亏"}
+        if mark < target:
             mark_text = "未知" if mark is None else f"${mark:.2f}"
             return {**out, "action": "close", "exit_value": mark,
                     "reason": f"时间止损：{tr['time_exit']}起对手价平仓价值{mark_text}<目标${target:.2f}"}
@@ -94,18 +125,22 @@ def _market_data(tr: dict) -> tuple:
     from .alpaca_options import occ_symbol
     from .gex_cboe import fetch_cboe_chain
     h = yf.Ticker(tr["underlying"]).history(period="2mo")
+    if h.empty or h.index[-1].date() != datetime.now(ET).date():
+        raise ValueError("标的当日日线缺失，不能用旧收盘价结算")
     close = float(h["Close"].iloc[-1])
     avg20 = float(h["Volume"].iloc[-21:-1].mean())
     vol_ratio = float(h["Volume"].iloc[-1]) / avg20 if avg20 > 0 else None
     quotes = None
     try:
         exp = date.fromisoformat(tr["expiry"])
-        by_sym = {o["option"]: o for o in fetch_cboe_chain(tr["underlying"]).get("options", [])}
+        chain = fetch_cboe_chain(tr["underlying"])
+        by_sym = {o["option"]: o for o in chain.get("options", [])}
         lg = by_sym.get(occ_symbol(tr["underlying"], exp, tr["cp"], tr["long_strike"]))
         sh = by_sym.get(occ_symbol(tr["underlying"], exp, tr["cp"], tr["short_strike"]))
         if lg and sh:
-            quotes = {"long_bid": float(lg["bid"] or 0), "long_ask": float(lg["ask"] or 0),
-                      "short_bid": float(sh["bid"] or 0), "short_ask": float(sh["ask"] or 0)}
+            quotes = {"long_bid": lg.get("bid"), "long_ask": lg.get("ask"),
+                      "short_bid": sh.get("bid"), "short_ask": sh.get("ask"),
+                      "source": "cboe", "quote_timestamp": chain.get("quote_timestamp")}
     except Exception:
         pass
     return close, vol_ratio, quotes
@@ -124,7 +159,12 @@ def run_options_watch(today: date | None = None, market=None) -> list:
         r = evaluate(tr, today, close, vol_ratio, quotes)
         tr["last_check"] = {"date": today.isoformat(), "close": round(close, 2),
                             "vol_ratio": round(vol_ratio, 2) if vol_ratio else None,
-                            "mark_natural": r["mark_natural"], "mark_mid": r["mark_mid"]}
+                            "mark_natural": r["mark_natural"], "mark_mid": r["mark_mid"],
+                            "quote_issue": r["quote_issue"], "raw_mark_natural": r["raw_mark_natural"],
+                            "raw_mark_mid": r["raw_mark_mid"], "quotes": quotes,
+                            "action": r["action"]}
+        if r["action"] == "review":
+            msgs.append(f"⚠️ 期权纸上交易#{tr['id']}报价待核实：{r['reason']}；未确认平仓、不记盈亏")
         if r["action"] == "close":
             tr.update(status="closed", closed=today.isoformat(), exit_reason=r["reason"], exit_value=r["exit_value"])
             if r["exit_value"] is not None:
