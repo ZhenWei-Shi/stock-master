@@ -46,7 +46,8 @@ def parse_occ(symbol: str):
 def fetch_cboe_chain(symbol: str, timeout: int = 20) -> dict:
     r = requests.get(CBOE_URL.format(symbol=symbol.upper()), headers=_HEADERS, timeout=timeout)
     r.raise_for_status()
-    return r.json()["data"]
+    payload = r.json()
+    return {**payload["data"], "quote_timestamp": payload.get("timestamp")}
 
 
 def _bs_gamma(S, K, iv, T):

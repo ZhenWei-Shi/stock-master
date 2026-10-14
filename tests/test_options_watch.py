@@ -35,6 +35,36 @@ class TestEvaluate:
     def test_intrinsic(self):
         assert intrinsic(TR, 61.0) == 1.0 and intrinsic(TR, 63.0) == 0.0 and intrinsic(TR, 55.0) == 2.0
 
+    @pytest.mark.parametrize("quotes", [None, {},
+        {"long_bid": 19, "long_ask": 21.1, "short_bid": 17, "short_ask": 18.2},
+        {"long_bid": 3.3, "long_ask": 3.2, "short_bid": 1.8, "short_ask": 1.9},
+        {"long_bid": float('nan'), "long_ask": 3.2, "short_bid": 1.8, "short_ask": 1.9},
+        {**Q, "long_bid": None},
+        {**Q, "source": "cboe", "quote_timestamp": "2026-10-13 20:00:00"},
+        {**Q, "source": "cboe", "quote_timestamp": None},
+    ])
+    def test_unusable_quote_does_not_confirm_exit(self, quotes):
+        r = evaluate(TR, date(2026,10,14), 42.0, 1.0, quotes)
+        assert r['action'] == 'review' and r['exit_value'] is None and r['quote_issue']
+
+    def test_expiry_does_not_need_option_quote(self):
+        r = evaluate(TR, date(2026,10,16), 42.0, 1.0, None)
+        assert r['action'] == 'close' and r['exit_value'] == 2.0
+
+    def test_same_day_valid_cboe_quote_can_close(self):
+        r = evaluate(TR, date(2026,10,14), 42.0, 1.0,
+                     {**Q, 'source':'cboe', 'quote_timestamp':'2026-10-14 20:00:00'})
+        assert r['action'] == 'close' and r['exit_value'] == 1.05
+
+
+def test_bad_quote_stays_open_and_later_valid_quote_settles_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(ow, '_FILE', str(tmp_path/'review.json'))
+    messages=ow.run_options_watch(today=date(2026,10,14), market=lambda tr:(42.0,1.0,None))
+    assert len(messages)==1 and ow._load()[0]['status']=='open' and 'pnl' not in ow._load()[0]
+    messages=ow.run_options_watch(today=date(2026,10,14), market=lambda tr:(42.0,1.0,Q))
+    assert len(messages)==1 and ow._load()[0]['status']=='closed' and ow._load()[0]['pnl']==5
+    assert ow.run_options_watch(today=date(2026,10,14),market=lambda tr:1/0)==[]
+
 
 def test_daily_run_closes_and_reports(tmp_path, monkeypatch):
     monkeypatch.setattr(ow, "_FILE", str(tmp_path / "o.json"))
