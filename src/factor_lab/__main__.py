@@ -11,7 +11,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .download import atomic_json
+from .publication import publish_json
 
 
 def load_config(path: Path) -> tuple[dict, str]:
@@ -100,15 +100,15 @@ def main(argv=None):
     else:
         if args.h4_input is None:
             parser.error("h4 requires --h4-input")
-        from .h4_validation import evaluate_h4
+        from .h4_validation import GATE_VERSION, evaluate_h4
         source = args.h4_input.read_bytes()
         obj = json.loads(source)
         # Accept a read-only audit snapshot, never import the original strategy.
         trades = obj["files"]["overnight_lab.json"]["data"]["trades"]
-        result = {**common, "evaluation_version": "h4-supplement-2026-10-22-v1",
+        result = {**common, "evaluation_version": GATE_VERSION,
                   "source_sha256": hashlib.sha256(source).hexdigest(), "source_captured_at": obj["captured_at_utc"],
                   "supplement": evaluate_h4(trades)}
-    atomic_json(args.output, result)
+    publish_json(args.output, result)
     print(json.dumps({"output": str(args.output), "action": args.action, "reserved_evaluated": False}))
 
 

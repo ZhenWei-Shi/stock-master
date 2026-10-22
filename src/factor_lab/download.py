@@ -11,15 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-
-def atomic_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        temporary.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+from .publication import replace_json as atomic_json
 
 
 def fetch_panel(config: dict, staging: Path) -> tuple[pd.DataFrame, dict]:

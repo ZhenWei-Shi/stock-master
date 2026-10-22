@@ -71,6 +71,27 @@ def test_cli_never_supplies_reserved_prices_to_factor_or_evaluation(tmp_path):
     assert json.loads((tmp_path / "out.json").read_text())["reserved_evaluated"] is False
 
 
+def test_cli_preserves_result_finalized_after_initial_check(tmp_path):
+    cfg, cfg_hash = load_config(CONFIG)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "manifest.json").write_text("{}")
+    output = tmp_path / "shared-result.json"
+    panel = pd.DataFrame({"date": pd.to_datetime(["2023-12-29"]), "symbol": ["AAPL"]})
+
+    def another_run_finishes(*args, **kwargs):
+        if not output.exists():
+            output.write_text('{"completed_by_other_run":true}')
+        return {"current_run": True}
+
+    with patch("src.factor_lab.cache.read_cache", return_value=(panel, {"metadata": {"config_sha256": cfg_hash}})), \
+            patch("src.factor_lab.factors.compute_factors", return_value=pd.DataFrame({"factor": cfg["factors"]})), \
+            patch("src.factor_lab.evaluation.evaluate_panel", side_effect=another_run_finishes):
+        with pytest.raises(FileExistsError):
+            main(["evaluate", "--config", str(CONFIG), "--cache", str(cache), "--output", str(output)])
+    assert json.loads(output.read_text()) == {"completed_by_other_run": True}
+
+
 def test_failed_source_cannot_be_published_as_empty_universe(tmp_path):
     cfg, _ = load_config(CONFIG)
     cfg = copy.deepcopy(cfg)

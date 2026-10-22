@@ -4,12 +4,16 @@
 - 仅读取 pool == 'v2' 的原账记录；v1 或无版本记录直接忽略（只计数）。
 - 字段：date（信号日，YYYY-MM-DD 或日期对象）、ticker、group（signal/control）、pool、
   ret，可选 status。ret 为该笔交易已扣除登记成本后的小数净收益（0.01 = 1%）。
-- 完成判定：存在 status 时 status == 'completed'；否则 ret 非 None。完成记录的 ret 必须
-  为有限数值，否则报错；未完成记录只计入 pending，不参与任何统计。
-- 同一日期多笔交易高度相关，不能视为独立样本：先按日期求组内均值，再对匹配日期等权，
-  每个日期至多计一次；日期序列使用 HAC(Bartlett, lag=1)。
+- 完成判定：存在 status 时只允许 completed/pending/open，未知值直接报错；completed 须有
+  有限数值 ret。无 status 时 ret 非 None 即完成，ret 同样须为有限数值。
+- 可评价日期：两组均有完成记录，且该日没有任何已登记的未完成 v2 记录；同日部分完成则
+  整日暂缓。较新的全未完成日期不影响历史日期。只依据已登记记录，无法发现源文件中未登记
+  的遗漏。
+- 同一日期多笔交易高度相关，不能视为独立样本：先按日期求组内均值，再对可评价日期等权，
+  每个日期至多计一次；日期序列使用 HAC(Bartlett, lag=1)。笔数门槛、日期门槛、均值与
+  HAC 使用同一可评价日期集合。
 - 只有一个预先指定的对比（signal - control），不做 Holm 调整。
-- supplemental_v2026-10-22 门槛是对已登记规则的补充，不替代登记规则；缺失数据不能通过。
+- supplemental_v2026-10-22-r2 门槛是对已登记规则的补充，不替代登记规则；缺失数据不能通过。
 - 不修改输入记录。
 '''
 from __future__ import annotations
@@ -17,17 +21,18 @@ from __future__ import annotations
 import datetime as _dt
 import math
 from collections import defaultdict
-from typing import Dict, List, Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, Optional
 
 import numpy as np
 import pandas as pd
 
 from .metrics import hac_mean
 
-GATE_VERSION = 'supplemental_v2026-10-22'
+GATE_VERSION = 'supplemental_v2026-10-22-r2'
 SOURCE_VERSION = 'v2'
 VERSION_FIELD = 'pool'
 VALID_GROUPS = ('signal', 'control')
+VALID_STATUSES = ('completed', 'pending', 'open')
 HAC_LAG = 1
 T_THRESHOLD = 2.0
 
@@ -93,10 +98,15 @@ def _parse_ret(value, pos: int) -> float:
 def _is_completed(rec: Mapping, pos: int) -> bool:
     if 'status' in rec:
         status = rec['status']
-        if not isinstance(status, str):
-            raise ValueError(f'trade {pos}: status must be a string')
+        if not isinstance(status, str) or status not in VALID_STATUSES:
+            raise ValueError(
+                f'trade {pos}: status must be one of {VALID_STATUSES}, got {status!r}')
         return status == 'completed'
     return rec.get('ret') is not None
+
+
+def _count(by_date: Mapping[str, List[float]], ds: Iterable[str]) -> int:
+    return sum(len(by_date.get(d, ())) for d in ds)
 
 
 def _legacy(rets: List[float]) -> dict:
@@ -121,7 +131,7 @@ def evaluate_h4(trades: List[dict], *, min_trades=200, min_dates=30,
                 cost_stress_bps=10.0) -> dict:
     '''只读评估 H4 v2 记录，返回 JSON 安全 dict（None 代替 NaN）。
 
-    门槛（全部满足才 passed）：完成 signal 笔数 >= min_trades；匹配日期 >= min_dates；
+    门槛（全部满足才 passed）：可评价 signal 笔数 >= min_trades；可评价日期 >= min_dates；
     日期等权 signal 净收益再扣 cost_stress_bps 后 > 0；日期等权超额 > 0 且 HAC t > 2。
     '''
     min_trades = _check_int(min_trades, 'min_trades', 1)
@@ -133,6 +143,7 @@ def evaluate_h4(trades: List[dict], *, min_trades=200, min_dates=30,
     ignored = 0
     pending = {g: 0 for g in VALID_GROUPS}
     completed = {g: 0 for g in VALID_GROUPS}
+    pending_dates = set()
     by_date: Dict[str, Dict[str, List[float]]] = {g: defaultdict(list) for g in VALID_GROUPS}
     signal_rets: List[float] = []
     for pos, rec in enumerate(trades):
@@ -153,6 +164,7 @@ def evaluate_h4(trades: List[dict], *, min_trades=200, min_dates=30,
         seen.add(key)
         if not _is_completed(rec, pos):
             pending[group] += 1
+            pending_dates.add(date)
             continue
         ret = _parse_ret(rec.get('ret'), pos)
         completed[group] += 1
@@ -161,20 +173,29 @@ def evaluate_h4(trades: List[dict], *, min_trades=200, min_dates=30,
             signal_rets.append(ret)
 
     sig, ctl = by_date['signal'], by_date['control']
-    matched = sorted(set(sig) & set(ctl))
-    signal_only = sorted(set(sig) - set(ctl))
-    control_only = sorted(set(ctl) - set(sig))
-    sig_mean = np.array([np.mean(sig[d]) for d in matched], dtype=float)
-    ctl_mean = np.array([np.mean(ctl[d]) for d in matched], dtype=float)
+    sig_dates, ctl_dates = set(sig), set(ctl)
+    matched = sorted(sig_dates & ctl_dates)
+    signal_only = sorted(sig_dates - ctl_dates)
+    control_only = sorted(ctl_dates - sig_dates)
+    # 同日存在任一已登记未完成记录则整日暂缓；全未完成的较新日期不影响历史日期。
+    evaluated = [d for d in matched if d not in pending_dates]
+    partial = sorted((sig_dates | ctl_dates) & pending_dates)
+    pending_only = sorted(pending_dates - sig_dates - ctl_dates)
+    excl_signal_only = [d for d in signal_only if d not in pending_dates]
+    excl_control_only = [d for d in control_only if d not in pending_dates]
+    n_sig, n_ctl = _count(sig, evaluated), _count(ctl, evaluated)
+
+    sig_mean = np.array([np.mean(sig[d]) for d in evaluated], dtype=float)
+    ctl_mean = np.array([np.mean(ctl[d]) for d in evaluated], dtype=float)
     diff = sig_mean - ctl_mean
-    hac = dict(hac_mean(pd.Series(diff, index=pd.DatetimeIndex(matched)), max_lag=HAC_LAG))
+    hac = dict(hac_mean(pd.Series(diff, index=pd.DatetimeIndex(evaluated)), max_lag=HAC_LAG))
     hac['max_lag'] = HAC_LAG
     mean_sig = _mean(sig_mean)
     mean_sig_stressed = None if mean_sig is None else mean_sig - stress_bps / 1e4
     mean_excess = _mean(diff)
     conditions = {
-        'completed_signal_ge_min': completed['signal'] >= min_trades,
-        'matched_dates_ge_min': len(matched) >= min_dates,
+        'evaluated_signal_ge_min': n_sig >= min_trades,
+        'evaluated_dates_ge_min': len(evaluated) >= min_dates,
         'net_positive_after_stress': mean_sig_stressed is not None and mean_sig_stressed > 0,
         'excess_positive': mean_excess is not None and mean_excess > 0,
         'hac_t_gt_threshold': hac['t'] is not None and hac['t'] > T_THRESHOLD,
@@ -186,25 +207,43 @@ def evaluate_h4(trades: List[dict], *, min_trades=200, min_dates=30,
         'completed_control': completed['control'],
         'pending_signal': pending['signal'],
         'pending_control': pending['control'],
+        'evaluated_signal': n_sig,
+        'evaluated_control': n_ctl,
+        'evaluated_dates': len(evaluated),
         'matched_dates': len(matched),
         'unmatched_completed_dates': len(signal_only) + len(control_only),
         'signal_only_dates': len(signal_only),
         'control_only_dates': len(control_only),
-        'first_matched_date': matched[0] if matched else None,
-        'last_matched_date': matched[-1] if matched else None,
+        'unmatched_note': ('matched/signal_only/control_only 按完成记录计数，含有未完成记录的日期；'
+                           'excluded 为互斥原因，只有 evaluated 日期进入统计'),
+        'excluded': {
+            'label': '互斥原因；completed = evaluated + 各原因排除笔数',
+            'date_counts': {'partial_pending': len(partial),
+                            'signal_only': len(excl_signal_only),
+                            'control_only': len(excl_control_only),
+                            'pending_only': len(pending_only)},
+            'completed_signal': {'partial_pending': _count(sig, partial),
+                                 'signal_only': _count(sig, excl_signal_only)},
+            'completed_control': {'partial_pending': _count(ctl, partial),
+                                  'control_only': _count(ctl, excl_control_only)},
+            'partial_pending_dates': partial,
+        },
+        'first_evaluated_date': evaluated[0] if evaluated else None,
+        'last_evaluated_date': evaluated[-1] if evaluated else None,
         'mean_net_signal': mean_sig,
         'mean_net_control': _mean(ctl_mean),
         'mean_net_signal_after_stress': mean_sig_stressed,
         'mean_excess_control': mean_excess,
         'hac': hac,
-        'weighting': 'date-equal: 每个匹配日期先取组内均值，日期至多计一次',
+        'weighting': 'date-equal: 每个可评价日期先取组内均值，日期至多计一次',
+        'date_rule': '两组均有完成记录且该日无任何已登记未完成 v2 记录；未登记记录无法发现',
         'multiple_comparison': '单一预设对比 (signal - control)，不做 Holm 调整',
         'cost_stress_bps': stress_bps,
         'legacy': _legacy(signal_rets),
         'supplemental_gate': {
             'version': GATE_VERSION,
             'label': '补充门槛，不替代已登记规则',
-            'thresholds': {'min_completed_signal': min_trades, 'min_matched_dates': min_dates,
+            'thresholds': {'min_evaluated_signal': min_trades, 'min_evaluated_dates': min_dates,
                            'additional_stress_bps': stress_bps, 'hac_t': T_THRESHOLD},
             'conditions': conditions,
             'passed': all(conditions.values()),

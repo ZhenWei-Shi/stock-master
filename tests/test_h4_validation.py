@@ -16,6 +16,10 @@ def trade(date, ticker, group, ret, pool='v2', status='completed'):
             'pool': pool, 'status': status, 'ret': ret}
 
 
+def pending(date, ticker, group, status='pending'):
+    return trade(date, ticker, group, None, status=status)
+
+
 def dates(n):
     return [d.strftime('%Y-%m-%d') for d in pd.bdate_range('2026-01-05', periods=n)]
 
@@ -36,57 +40,149 @@ def build(n_dates=40, n_signal=6, n_control=3, signal_mu=0.01, control_mu=0.0,
 
 
 class H4ValidationTest(unittest.TestCase):
+    def assert_partition(self, res):
+        ex = res['excluded']
+        self.assertEqual(res['completed_signal'],
+                         res['evaluated_signal'] + sum(ex['completed_signal'].values()))
+        self.assertEqual(res['completed_control'],
+                         res['evaluated_control'] + sum(ex['completed_control'].values()))
+        if res['evaluated_dates']:
+            self.assertEqual(res['hac']['n'], res['evaluated_dates'])
+
     def test_gate_passes_with_enough_independent_dates(self):
         res = evaluate_h4(build())
         self.assertEqual(res['completed_signal'], 240)
         self.assertEqual(res['completed_control'], 120)
+        self.assertEqual(res['evaluated_signal'], 240)
+        self.assertEqual(res['evaluated_control'], 120)
         self.assertEqual(res['matched_dates'], 40)
+        self.assertEqual(res['evaluated_dates'], 40)
         self.assertGreater(res['hac']['t'], 2.0)
         self.assertEqual(res['hac']['max_lag'], 1)
+        self.assert_partition(res)
         gate = res['supplemental_gate']
         self.assertEqual(gate['version'], GATE_VERSION)
+        self.assertEqual(GATE_VERSION, 'supplemental_v2026-10-22-r2')
+        self.assertEqual(gate['thresholds']['min_evaluated_signal'], 200)
+        self.assertEqual(gate['thresholds']['min_evaluated_dates'], 30)
         self.assertTrue(all(gate['conditions'].values()))
         self.assertTrue(gate['passed'])
 
     def test_same_date_trades_not_independent(self):
         res = evaluate_h4(build(n_dates=10, n_signal=30))
         self.assertEqual(res['completed_signal'], 300)
-        self.assertEqual(res['matched_dates'], 10)
+        self.assertEqual(res['evaluated_signal'], 300)
+        self.assertEqual(res['evaluated_dates'], 10)
         self.assertGreater(res['legacy']['t_iid'], 2.0)
         self.assertIsNone(res['hac']['t'])
-        self.assertFalse(res['supplemental_gate']['conditions']['matched_dates_ge_min'])
+        self.assertFalse(res['supplemental_gate']['conditions']['evaluated_dates_ge_min'])
         self.assertFalse(res['supplemental_gate']['passed'])
 
     def test_missing_controls_do_not_pass(self):
         res = evaluate_h4(build(control_dates=dates(40)[:15]))
         self.assertEqual(res['matched_dates'], 15)
+        self.assertEqual(res['evaluated_dates'], 15)
+        self.assertEqual(res['evaluated_signal'], 90)
         self.assertEqual(res['unmatched_completed_dates'], 25)
         self.assertEqual(res['signal_only_dates'], 25)
+        self.assertEqual(res['excluded']['date_counts']['signal_only'], 25)
+        self.assertEqual(res['excluded']['completed_signal']['signal_only'], 150)
+        self.assert_partition(res)
         self.assertFalse(res['supplemental_gate']['passed'])
         none = evaluate_h4(build(control_dates=[]))
         self.assertEqual(none['matched_dates'], 0)
+        self.assertEqual(none['evaluated_dates'], 0)
+        self.assertEqual(none['evaluated_signal'], 0)
         self.assertIsNone(none['mean_excess_control'])
         self.assertIsNone(none['mean_net_signal'])
         self.assertIsNone(none['hac']['t'])
         self.assertFalse(none['supplemental_gate']['conditions']['excess_positive'])
         self.assertFalse(none['supplemental_gate']['passed'])
 
-    def test_pending_not_counted(self):
+    def test_partial_pending_dates_deferred(self):
         base = build()
         ds = dates(40)
         extra = [
-            trade(ds[0], 'P001', 'signal', None, status='pending'),
+            pending(ds[0], 'P001', 'signal'),
             trade(ds[1], 'P002', 'signal', 0.5, status='open'),
-            trade('2026-12-31', 'P003', 'control', None, status='pending'),
-            {'date': '2026-12-30', 'ticker': 'P004', 'group': 'control',
-             'pool': 'v2', 'ret': None},
+            {'date': ds[2], 'ticker': 'P003', 'group': 'control', 'pool': 'v2', 'ret': None},
+            pending('2026-12-31', 'P004', 'control'),
         ]
-        ref = evaluate_h4(base)
         res = evaluate_h4(base + extra)
         self.assertEqual(res['pending_signal'], 2)
         self.assertEqual(res['pending_control'], 2)
-        for key in ('completed_signal', 'completed_control', 'matched_dates', 'mean_excess_control'):
-            self.assertEqual(res[key], ref[key])
+        self.assertEqual(res['completed_signal'], 240)
+        self.assertEqual(res['completed_control'], 120)
+        self.assertEqual(res['matched_dates'], 40)
+        self.assertEqual(res['evaluated_dates'], 37)
+        self.assertEqual(res['evaluated_signal'], 222)
+        self.assertEqual(res['evaluated_control'], 111)
+        ex = res['excluded']
+        self.assertEqual(ex['partial_pending_dates'], ds[:3])
+        self.assertEqual(ex['date_counts']['partial_pending'], 3)
+        self.assertEqual(ex['date_counts']['pending_only'], 1)
+        self.assertEqual(ex['completed_signal']['partial_pending'], 18)
+        self.assertEqual(ex['completed_control']['partial_pending'], 9)
+        self.assert_partition(res)
+        expected = evaluate_h4([t for t in base if t['date'] not in ds[:3]])
+        self.assertAlmostEqual(res['mean_excess_control'], expected['mean_excess_control'], places=12)
+        self.assertAlmostEqual(res['hac']['t'], expected['hac']['t'], places=9)
+
+    def test_review_repro_signals_without_control_fail(self):
+        res = evaluate_h4(build(n_dates=200, n_signal=1, n_control=1,
+                                control_dates=dates(200)[:30]))
+        self.assertEqual(res['completed_signal'], 200)
+        self.assertEqual(res['evaluated_signal'], 30)
+        self.assertEqual(res['evaluated_control'], 30)
+        self.assertEqual(res['evaluated_dates'], 30)
+        self.assertEqual(res['signal_only_dates'], 170)
+        self.assertEqual(res['excluded']['completed_signal']['signal_only'], 170)
+        self.assert_partition(res)
+        cond = res['supplemental_gate']['conditions']
+        self.assertFalse(cond['evaluated_signal_ge_min'])
+        self.assertTrue(cond['evaluated_dates_ge_min'])
+        self.assertFalse(res['supplemental_gate']['passed'])
+
+    def test_review_repro_partial_dates_fail(self):
+        trades = build(n_dates=30, n_signal=7)
+        trades += [pending(d, 'P000', 'signal') for d in dates(30)]
+        res = evaluate_h4(trades)
+        self.assertEqual(res['completed_signal'], 210)
+        self.assertEqual(res['pending_signal'], 30)
+        self.assertEqual(res['matched_dates'], 30)
+        self.assertEqual(res['evaluated_signal'], 0)
+        self.assertEqual(res['evaluated_control'], 0)
+        self.assertEqual(res['evaluated_dates'], 0)
+        self.assertEqual(res['excluded']['partial_pending_dates'], dates(30))
+        self.assertEqual(res['excluded']['completed_signal']['partial_pending'], 210)
+        self.assert_partition(res)
+        self.assertIsNone(res['mean_excess_control'])
+        self.assertIsNone(res['hac']['t'])
+        self.assertFalse(res['supplemental_gate']['passed'])
+
+    def test_latest_pending_dates_do_not_block(self):
+        base = build()
+        later = [pending('2026-12-31', 'P001', 'signal'),
+                 pending('2026-12-31', 'P002', 'control', status='open'),
+                 {'date': '2026-12-30', 'ticker': 'P003', 'group': 'signal',
+                  'pool': 'v2', 'ret': None}]
+        ref = evaluate_h4(base)
+        res = evaluate_h4(base + later)
+        self.assertEqual(res['pending_signal'], 2)
+        self.assertEqual(res['pending_control'], 1)
+        self.assertEqual(res['evaluated_signal'], 240)
+        self.assertEqual(res['evaluated_dates'], 40)
+        self.assertEqual(res['excluded']['date_counts']['pending_only'], 2)
+        self.assertEqual(res['excluded']['date_counts']['partial_pending'], 0)
+        self.assertEqual(res['mean_excess_control'], ref['mean_excess_control'])
+        self.assertEqual(res['hac'], ref['hac'])
+        self.assertTrue(res['supplemental_gate']['passed'])
+
+    def test_unknown_status_raises(self):
+        d = dates(1)[0]
+        for status in ('closed', 'Completed', '', None, 1):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                evaluate_h4([trade(d, 'X', 'signal', 0.01, status=status)])
 
     def test_stress_cost_in_bps(self):
         trades = build(signal_mu=0.0005, control_mu=-0.01, noise=0.0001)
@@ -101,7 +197,7 @@ class H4ValidationTest(unittest.TestCase):
     def test_v1_records_ignored(self):
         base = build()
         legacy = [trade(dates(40)[0], 'X', 'bogus', float('nan'), pool='v1'),
-                  trade(dates(40)[0], 'X', 'bogus', float('nan'), pool='v1'),
+                  trade(dates(40)[0], 'X', 'bogus', float('nan'), pool='v1', status='weird'),
                   {'date': 'not-a-date', 'group': 'signal', 'ret': 1.0}]
         ref = evaluate_h4(base)
         res = evaluate_h4(base + legacy)
@@ -121,6 +217,7 @@ class H4ValidationTest(unittest.TestCase):
             [trade(d, 'X', 'signal', float('inf'))],
             [trade(d, 'X', 'signal', True)],
             [trade(d, 'X', 'signal', None)],
+            [{'date': d, 'ticker': 'X', 'group': 'signal', 'pool': 'v2', 'ret': float('nan')}],
             [trade('2026-13-45', 'X', 'signal', 0.01)],
         ]
         for trades in cases:
@@ -140,7 +237,8 @@ class H4ValidationTest(unittest.TestCase):
                 trades.append(trade(d, 'C' + suffix, 'control', 0.0))
         res = evaluate_h4(trades)
         self.assertEqual(res['completed_signal'], 50)
-        self.assertEqual(res['matched_dates'], 25)
+        self.assertEqual(res['evaluated_signal'], 50)
+        self.assertEqual(res['evaluated_dates'], 25)
         self.assertEqual(res['hac']['n'], 25)
 
     def test_actual_ledger_schema_without_status_or_version(self):
@@ -149,11 +247,16 @@ class H4ValidationTest(unittest.TestCase):
                    dict(date='2026-10-13', ticker='AAA', group='signal', pool='v2', exit=None)]
         res = evaluate_h4(records)
         self.assertEqual(res['completed_signal'], 1)
-        self.assertEqual(res['matched_dates'], 1)
+        self.assertEqual(res['evaluated_signal'], 1)
+        self.assertEqual(res['evaluated_dates'], 1)
         self.assertEqual(res['pending_signal'], 1)
+        self.assertEqual(res['excluded']['date_counts']['pending_only'], 1)
+        self.assertEqual(res['excluded']['date_counts']['partial_pending'], 0)
 
     def test_source_records_not_modified(self):
-        base = build()
+        base = build() + [pending(dates(40)[0], 'P001', 'signal'),
+                          {'date': '2026-12-31', 'ticker': 'P002', 'group': 'control',
+                           'pool': 'v2', 'ret': None}]
         snapshot = copy.deepcopy(base)
         evaluate_h4(base)
         self.assertEqual(base, snapshot)

@@ -46,7 +46,13 @@ python -m src.factor_lab h4 --h4-input /private/read-only-audit-snapshot.json --
 python -m pytest tests/test_factor*.py tests/test_h4_validation.py
 ```
 
-Output paths are immutable: rerunning must use a new output path. A complete,
+Output paths are immutable: rerunning must use a new output path. Final JSON is
+staged in a unique same-directory file, fsynced, and published with an atomic
+hard link that refuses an existing target, even if another run finishes after
+the startup check. This requires a filesystem supporting hard links; unsupported
+publication fails without a partial result or overwrite fallback. Request/status
+metadata remains explicitly replaceable and uses separate unique temporary files.
+A complete,
 matching cache is verified and reused without downloading. Acquisition staging
 is bound to the requested universe and dates and verifies SHA256 before reuse.
 A failed ticker blocks publication of a complete cache; it is not silently
@@ -67,9 +73,17 @@ stocks, and reports exploratory findings only.
 
 The new H4 reader computes a separately versioned comparison on an immutable
 copy of v2 forward records. It preserves the original strategy's registered
-mean/t gates and all files. The supplemental requirement is >=200 completed
-signal records, >=30 matched dates, positive net mean under an additional 10bp
-stress and positive date-level excess over controls with HAC t>2. This is new
+mean/t gates and all files. Revision `supplemental_v2026-10-22-r2` requires >=200
+evaluated signal records over >=30 evaluated dates, positive net mean under an
+additional 10bp stress and positive date-level excess over controls with HAC t>2.
+An evaluated date has completed records in both groups and no registered pending
+record in either group; partial dates are deferred in full. Newly pending dates
+do not invalidate older complete samples. Ledger totals, evaluated counts and
+mutually exclusive exclusion reasons are reported separately. Explicit statuses
+are limited to completed/pending/open; unknown statuses fail instead of silently
+dropping possible outcomes. Records without status retain the original ret/None
+completion protocol. The same evaluated subset supplies all gates and statistics.
+This is new
 supporting research, not a retrospective replacement of the old acceptance rule.
 Unmatched, unfinished and old-pool records are reported separately.
 
