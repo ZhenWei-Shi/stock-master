@@ -56,7 +56,7 @@ def fetch_panel(config: dict, staging: Path) -> tuple[pd.DataFrame, dict]:
                     try:
                         history = yf.Ticker(symbol).history(
                             start=request["start"], end=request["end"], auto_adjust=False,
-                            actions=True, repair=False, timeout=20, raise_errors=True)
+                            actions=True, repair=False, interval="1d", timeout=20, raise_errors=True)
                         break
                     except Exception as exc:
                         # Read-only request: one bounded retry; never treat failure as no data.

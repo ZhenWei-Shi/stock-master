@@ -11,9 +11,24 @@ import pytest
 
 from src.factor_lab.__main__ import load_config, main
 from src.factor_lab.download import fetch_panel
+from src.factor_lab.data_contract import data_request, request_sha256
 
 
 CONFIG = Path(__file__).resolve().parents[1] / "research/factor_lab_v1.toml"
+
+
+def compatible_manifest(cfg, cfg_hash):
+    """Real request evidence, independent of experiment configuration fingerprint."""
+    symbols = [*cfg["symbols"], cfg["benchmark"]]
+    request = data_request(cfg)
+    return {"metadata": {"config_sha256": cfg_hash, "source": cfg["source"],
+                         "data_request": request, "data_request_sha256": request_sha256(request),
+                         "requested_start": cfg["download_start"],
+                         "requested_end": cfg["download_end_exclusive"],
+                         "request": {"symbols": symbols, "start": cfg["download_start"],
+                                     "end": cfg["download_end_exclusive"]}},
+            "files": [{"symbol": s, "first_date": "2013-01-02", "last_date": "2023-12-29"}
+                      for s in symbols]}
 
 
 def test_reserved_cannot_be_enabled(tmp_path):
@@ -63,7 +78,7 @@ def test_cli_never_supplies_reserved_prices_to_factor_or_evaluation(tmp_path):
         seen.append(kw["end"])
         return {"boundary_test": True}
 
-    with patch("src.factor_lab.cache.read_cache", return_value=(panel, {"metadata": {"config_sha256": cfg_hash}})), \
+    with patch("src.factor_lab.cache.read_cache", return_value=(panel, compatible_manifest(cfg, cfg_hash))), \
             patch("src.factor_lab.factors.compute_factors", side_effect=factors), \
             patch("src.factor_lab.evaluation.evaluate_panel", side_effect=evaluation):
         main(["evaluate", "--config", str(CONFIG), "--cache", str(cache), "--output", str(tmp_path / "out.json")])
@@ -84,7 +99,7 @@ def test_cli_preserves_result_finalized_after_initial_check(tmp_path):
             output.write_text('{"completed_by_other_run":true}')
         return {"current_run": True}
 
-    with patch("src.factor_lab.cache.read_cache", return_value=(panel, {"metadata": {"config_sha256": cfg_hash}})), \
+    with patch("src.factor_lab.cache.read_cache", return_value=(panel, compatible_manifest(cfg, cfg_hash))), \
             patch("src.factor_lab.factors.compute_factors", return_value=pd.DataFrame({"factor": cfg["factors"]})), \
             patch("src.factor_lab.evaluation.evaluate_panel", side_effect=another_run_finishes):
         with pytest.raises(FileExistsError):

@@ -12,6 +12,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .publication import publish_json
+from .data_contract import assert_cache_compatible, data_request, request_sha256
+from .provenance import verify_legacy_proof, verify_diagnostic_source
+
+
+def cache_compatibility(cfg, manifest, cache, legacy_registration):
+    legacy = "data_request" not in manifest["metadata"]
+    if legacy:
+        proof = tomllib.loads(legacy_registration.read_text(encoding="utf-8"))
+        verify_legacy_proof(manifest, (cache / "manifest.json").read_bytes(), proof)
+    result = assert_cache_compatible(cfg, manifest, legacy_verified=legacy)
+    if legacy:
+        result["compatibility_mode"] = "inspected_immutable_legacy_v1"
+        result["acquisition_code_commit"] = proof["acquisition_code_commit"]
+    return result
 
 
 def load_config(path: Path) -> tuple[dict, str]:
@@ -41,11 +55,14 @@ def load_config(path: Path) -> tuple[dict, str]:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["fetch", "evaluate", "h4"])
+    parser.add_argument("action", choices=["fetch", "evaluate", "h4", "diagnose"])
     parser.add_argument("--config", type=Path, default=Path("research/factor_lab_v1.toml"))
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--h4-input", type=Path)
+    parser.add_argument("--results-input", type=Path)
+    parser.add_argument("--diagnostic-config", type=Path, default=Path("research/factor_diagnostics_v1.toml"))
+    parser.add_argument("--legacy-cache-registration", type=Path, default=Path("research/factor_cache_legacy_v1.toml"))
     args = parser.parse_args(argv)
     if args.output.exists():
         raise FileExistsError("Refusing to overwrite an experiment output")
@@ -65,15 +82,17 @@ def main(argv=None):
         from .download import fetch_panel
         if (args.cache / "manifest.json").exists():
             panel, manifest = read_cache(args.cache)
-            if manifest["metadata"].get("config_sha256") != cfg_hash:
-                raise ValueError("Cache configuration differs from registered request")
+            compatibility = cache_compatibility(cfg, manifest, args.cache, args.legacy_cache_registration)
             reused = True
         else:
             panel, meta = fetch_panel(cfg, args.cache.with_name(args.cache.name + "-staging"))
             meta["config_sha256"] = cfg_hash
+            meta["data_request"] = data_request(cfg)
+            meta["data_request_sha256"] = request_sha256(meta["data_request"])
             manifest = write_cache(panel, args.cache, meta)
+            compatibility = cache_compatibility(cfg, manifest, args.cache, args.legacy_cache_registration)
             reused = False
-        result = {**common, "reused_cache": reused, "cache_manifest_sha256": hashlib.sha256(
+        result = {**common, "reused_cache": reused, "data_compatibility": compatibility, "cache_manifest_sha256": hashlib.sha256(
             (args.cache / "manifest.json").read_bytes()).hexdigest(), "quality": quality_report(panel, cfg["benchmark"])}
     elif args.action == "evaluate":
         if args.cache is None:
@@ -83,13 +102,12 @@ def main(argv=None):
         from .evaluation import evaluate_panel
         import pandas as pd
         panel, manifest = read_cache(args.cache)
-        if manifest["metadata"].get("config_sha256") != cfg_hash:
-            raise ValueError("Cache configuration mismatch")
+        compatibility = cache_compatibility(cfg, manifest, args.cache, args.legacy_cache_registration)
         panel = panel[panel.date <= pd.Timestamp(cfg["validation_end"])].copy()
         values = compute_factors(panel, symbols=cfg["symbols"])
         if set(values.factor) != set(cfg["factors"]):
             raise ValueError("Factor definitions differ from preregistration")
-        result = {**common, "cache_manifest_sha256": hashlib.sha256(
+        result = {**common, "data_compatibility": compatibility, "cache_manifest_sha256": hashlib.sha256(
             (args.cache / "manifest.json").read_bytes()).hexdigest(), "periods": {}}
         for period in ["development", "validation"]:
             result["periods"][period] = evaluate_panel(
@@ -97,6 +115,21 @@ def main(argv=None):
                 horizon=cfg["horizon_sessions"], cost_bps=cfg["roundtrip_cost_bps"],
                 seed=cfg["random_seed"], n_quantiles=cfg["quantiles"],
                 factor_names=cfg["factors"], stress_cost_bps=cfg["stress_cost_bps"], hac_lag=cfg["hac_lag"])
+    elif args.action == "diagnose":
+        if args.results_input is None or args.cache is not None or args.h4_input is not None:
+            parser.error("diagnose requires --results-input and does not accept price cache or H4 input")
+        from .diagnostics import diagnose_result
+        source_bytes = args.results_input.read_bytes()
+        source = json.loads(source_bytes)
+        if source.get("config_sha256") != cfg_hash:
+            raise ValueError("Diagnostic source configuration differs from registered experiment")
+        registration_bytes = args.diagnostic_config.read_bytes()
+        registration = tomllib.loads(registration_bytes.decode("utf-8"))
+        verify_diagnostic_source(source, source_bytes, cfg, cfg_hash, registration)
+        result = {**common, "source_result_sha256": hashlib.sha256(source_bytes).hexdigest(),
+                  "source_code_commit": source.get("code_commit"),
+                  "diagnostic_config_sha256": hashlib.sha256(registration_bytes).hexdigest(),
+                  "diagnostics": diagnose_result(source, cfg, registration)}
     else:
         if args.h4_input is None:
             parser.error("h4 requires --h4-input")

@@ -43,6 +43,7 @@ limitations. A significant statistic alone cannot qualify a trading strategy.
 python -m src.factor_lab fetch --cache data/factor-cache-v1 --output data/cache-quality-v1.json
 python -m src.factor_lab evaluate --cache data/factor-cache-v1 --output data/factor-results-v1.json
 python -m src.factor_lab h4 --h4-input /private/read-only-audit-snapshot.json --output data/h4-supplement-v1.json
+python -m src.factor_lab diagnose --results-input data/factor-results-repair-r2.json --output data/factor-diagnostics-v1.json
 python -m pytest tests/test_factor*.py tests/test_h4_validation.py
 ```
 
@@ -57,6 +58,14 @@ matching cache is verified and reused without downloading. Acquisition staging
 is bound to the requested universe and dates and verifies SHA256 before reuse.
 A failed ticker blocks publication of a complete cache; it is not silently
 removed from the universe. Cache manifest publication is the final atomic step.
+
+Data identity is separate from experiment provenance: provider, daily raw OHLCV,
+adjusted-close/action policy, exact symbols and requested dates determine reuse.
+Changing only experiment metadata does not require another download. New caches
+record this identity explicitly. Legacy caches require the exact inspected
+manifest and acquisition evidence in `factor_cache_legacy_v1.toml`; an arbitrary
+Yahoo source-name match cannot establish an old adjustment policy. This evidence
+does not establish a historical point-in-time universe or delisted-price coverage.
 An exclusive writer lock blocks concurrent publication into the same directory;
 after a crash inspect the previous process before removing a stale lock.
 Keep all prices, provenance, local evidence, and results under ignored `data/`.
@@ -68,6 +77,21 @@ selection, revised data, model pretraining and the analyst's historical knowledg
 remain sources of hindsight. Even an untouched historical test is not new live
 evidence. This batch contains no point-in-time index membership or delisted
 stocks, and reports exploratory findings only.
+
+## Descriptive follow-up
+
+`factor_diagnostics_v1.toml` was committed before calculating annual diagnostics
+and binds the exact earlier result/config/cache hashes. `diagnose` accepts only
+that old result, never a price cache, and publishes a new immutable output.
+It describes all four candidates by signal year (2013--2023), the fixed
+0/10/20/40bp cost grid, and the five largest positive random-excess dates as a
+share of all positive random excess. Labels can cross calendar-year boundaries.
+Equal fixed fees cancel in excess comparisons. These are diagnostics after
+seeing aggregate results, with no new independent confirmation, candidate
+selection, historical sector attribution or turnover/execution-cost validation.
+The original reserved period remains unevaluated. Historical universe, delisted
+returns, stable security identifiers and member-level attribution remain gaps;
+the first cache cannot qualify as a survivorship-free research dataset.
 
 ## H4 supplemental evidence
 
