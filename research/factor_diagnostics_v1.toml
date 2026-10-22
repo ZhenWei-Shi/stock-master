@@ -1,0 +1,14 @@
+schema_version = 1
+diagnostic_id = "daily-four-factors-descriptive-2026-10-22-v1"
+registered_on = "2026-10-22"
+source_experiment_id = "daily-four-factors-2026-10-22-v1"
+purpose = "Describe existing development/validation results; no candidate selection, tuning or promotion"
+allowed_periods = ["development", "validation"]
+allowed_years = [2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023]
+reserved_start = "2024-01-01"
+cost_scenarios_bps = [0.0, 10.0, 20.0, 40.0]
+concentration_top_dates = 5
+run_reserved = false
+new_hypotheses = false
+select_candidates = false
+limitations = ["Diagnostics follow inspection of aggregate validation results and cannot provide new independent confirmation", "Group by signal year; original five-session labels may cross calendar-year boundaries", "Flat equal costs cancel in same-cost excess; no turnover or execution-cost robustness claim", "Date concentration is not stock contribution or historical sector attribution", "Existing universe remains selected from current survivors; no PIT or delisting coverage"]
