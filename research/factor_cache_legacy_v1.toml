@@ -1,0 +1,8 @@
+schema_version = 1
+manifest_sha256 = "604db9c9f2ddb2ce025b48cc60c5edf61ed20dcee4234303da6c26d88bc6bd7b"
+manifest_canonical_sha256 = "1e59d4cf9711899d4aab62b6641fdbcc0bab4d5dded7a56030c85f7b9c85042d"
+config_sha256 = "20cd8001c44e61661883148c968c415530c693888b6f13d6d7914f770073832a"
+source = "Yahoo Finance via yfinance 1.7.0"
+acquisition_code_commit = "09cd0e494192b7c6ba832be0a9b7d7caf28fd676"
+acquisition_source_sha256 = "6f52f096a65bd269378b1340acbe3082d0a07f25c258fc4d27ab1bda2cebfb52"
+policy_evidence = "At the pinned acquisition implementation: daily history, auto_adjust=False, actions=True, repair=False; original immutable cache and config inspected on 2026-10-22"
