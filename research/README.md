@@ -95,9 +95,13 @@ the first cache cannot qualify as a survivorship-free research dataset.
 
 ## H4 supplemental evidence
 
-The new H4 reader computes a separately versioned comparison on an immutable
-copy of v2 forward records. It preserves the original strategy's registered
-mean/t gates and all files. Revision `supplemental_v2026-10-22-r2` requires >=200
+The H4 reader computes a separately versioned comparison on an immutable
+copy of v2 forward records. On 2026-10-23 the user authorized adopting this
+comparison as the confirmation gate in `src.overnight_lab.summarize` (including
+`--summary` and the existing `/events` report). The old trade-level iid mean/t
+remains explicitly reference-only. Sampling, ledger schema and files, costs at
+registration, and order paths do not change. This code proposal is not a
+deployment or permission to trade. Revision `supplemental_v2026-10-22-r2` requires >=200
 evaluated signal records over >=30 evaluated dates, positive net mean under an
 additional 10bp stress and positive date-level excess over controls with HAC t>2.
 An evaluated date has completed records in both groups and no registered pending

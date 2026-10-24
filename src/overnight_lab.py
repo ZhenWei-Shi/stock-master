@@ -12,7 +12,7 @@
   - 买入价 = 15:45时的价格；卖出价 = 下一个交易日开盘价
   - 每条信号同时从当天非信号股票里随机抽1只，用同样的价格口径记作对照
   - 成本：每笔往返扣COST_ROUNDTRIP（10bp）
-  - 判定：≥MIN_TRADES笔后，扣成本平均收益>0且t>2才算成立；对照组用来确认不是市场整体隔夜上涨
+  - 2026-10-23用户更新确认标准：至少200可评价信号/30完整匹配日期，追加10bp后净正、随机超额正、日期HAC t>2；旧逐笔iid仅参考。
 
 扩池（2026-10-10用户决定，PR#52，POOL_V2_START起生效）：原股票池约91只，9个交易日只出5笔信号，
   攒满200笔约需1.5年。股票池改为原池 ∪ 标普500 ∪ 纳指100（universe_large，约530只）；量比门槛、
@@ -153,19 +153,68 @@ def _mt(xs):
 
 
 def summarize(state: dict | None = None) -> str:
-    """判定只用扩池后的v2样本；扩池前的v1单独列出。"""
-    state = state or _load()
-    f = lambda x: "—" if x is None else f"{x * 100:+.3f}%"
-    v2 = [t for t in state["trades"] if t.get("pool") == "v2"]
-    v1 = [t for t in state["trades"] if t.get("pool") != "v2"]
-    n, m, tt = _mt([t.get("ret") for t in v2 if t["group"] == "signal"])
-    nc, mc, _ = _mt([t.get("ret") for t in v2 if t["group"] == "control"])
-    n1, m1, _ = _mt([t.get("ret") for t in v1 if t["group"] == "signal"])
-    verdict = (f"样本未满{MIN_TRADES}，不下结论" if n < MIN_TRADES else
-               ("✅ 按事先标准成立" if (m or 0) > 0 and (tt or 0) > 2 else "❌ 按事先标准不成立"))
-    return (f"H4 隔夜放量（收盘前买、次日开盘卖，{POOL_V2_START}起约530只池）：{n}笔 平均{f(m)}（已扣成本） "
-            f"t={'—' if tt is None else f'{tt:+.1f}'}  对照{nc}笔 平均{f(mc)}  {verdict}"
-            + (f"｜扩池前旧池{n1}笔 平均{f(m1)}（不参与判定）" if n1 else ""))
+    '''判定只用 v2，按 H4 补充标准（evaluate_h4，日期等权 signal-control）；v1 与旧逐笔 iid 统计仅参考。'''
+    from .factor_lab.h4_validation import GATE_VERSION, evaluate_h4
+    if state is None:
+        state = _load()
+    if not isinstance(state, dict):
+        raise ValueError('H4 state 必须是 dict')
+    if 'trades' not in state:
+        raise ValueError('H4 state 缺少 trades 字段')
+    trades = state['trades']
+    if not isinstance(trades, (list, tuple)):
+        raise ValueError('H4 trades 必须是 list 或 tuple')
+    for i, t in enumerate(trades):
+        if not isinstance(t, dict):
+            raise ValueError(f'H4 trade {i} 必须是 dict')
+    f = lambda x: '—' if x is None else f'{x * 100:+.3f}%'
+    head = f'H4 隔夜放量（收盘前买、次日开盘卖，{POOL_V2_START}起约530只池，补充标准 {GATE_VERSION}）：'
+    # v1 仅参考：只统计有限数值 ret，其余计为未知，不进入评价器
+    v1_sig = [t for t in trades if t.get('pool') != 'v2' and t.get('group') == 'signal']
+    v1_ok = [float(t['ret']) for t in v1_sig
+             if isinstance(t.get('ret'), (int, float)) and not isinstance(t.get('ret'), bool)
+             and math.isfinite(t['ret'])]
+    n1, m1, _ = _mt(v1_ok)
+    unk1 = len(v1_sig) - n1
+    v1_txt = ((f'｜扩池前旧池signal {n1}笔 平均{f(m1)}（仅参考，不参与判定'
+               + (f'；{unk1}笔ret缺失或非法未计' if unk1 else '') + '）') if v1_sig else '')
+    if not any(t.get('pool') == 'v2' for t in trades):
+        return head + '无v2记录，⏳ 样本不足，不下结论' + v1_txt
+    try:
+        r = evaluate_h4(trades)
+    except ValueError as e:
+        raise ValueError(f'H4 v2 记录非法，无法判定：{e}') from e
+    g = r['supplemental_gate']
+    c, th = g['conditions'], g['thresholds']
+    t_hac = r['hac'].get('t')
+    reasons = {
+        'evaluated_signal_ge_min': f"可评价signal<{th['min_evaluated_signal']}笔",
+        'evaluated_dates_ge_min': f"可评价日期<{th['min_evaluated_dates']}天",
+        'net_positive_after_stress': f"追加{th['additional_stress_bps']:g}bp后净收益非正或未知",
+        'excess_positive': '相对对照超额非正或未知',
+        'hac_t_gt_threshold': f"HAC t未超过{th['hac_t']:g}或未知",
+    }
+    miss = '；'.join(txt for k, txt in reasons.items() if not c[k])
+    if g['passed']:
+        verdict = '✅ 按补充标准通过'
+    elif not (c['evaluated_signal_ge_min'] and c['evaluated_dates_ge_min']):
+        verdict = f'⏳ 样本不足，不下结论（未满足：{miss}）'
+    else:
+        verdict = f'❌ 按补充标准不通过（未满足：{miss}）'
+    lg = r['legacy']
+    lt = lg['t_iid']
+    return (head
+            + f"完成signal {r['completed_signal']}/对照{r['completed_control']}笔，"
+            f"未完成{r['pending_signal']}/{r['pending_control']}笔；"
+            f"可评价signal {r['evaluated_signal']}笔、完整日期{r['evaluated_dates']}天"
+            f"（部分未完成整日暂缓{r['excluded']['date_counts']['partial_pending']}天）；"
+            f"日期等权 signal净{f(r['mean_net_signal'])}（已扣登记成本）"
+            f"→追加{th['additional_stress_bps']:g}bp后{f(r['mean_net_signal_after_stress'])}，"
+            f"超额{f(r['mean_excess_control'])} HAC t={'未知' if t_hac is None else f'{t_hac:+.2f}'}  "
+            + verdict
+            + f"｜旧逐笔iid口径{lg['completed_signal']}笔 平均{f(lg['mean_net_signal_trade_weighted'])} "
+            f"t={'—' if lt is None else f'{lt:+.1f}'}（仅参考，不参与判定）"
+            + v1_txt)
 
 
 def format_result(r: dict) -> str:
