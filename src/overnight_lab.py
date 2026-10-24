@@ -188,8 +188,8 @@ def summarize(state: dict | None = None) -> str:
     c, th = g['conditions'], g['thresholds']
     t_hac = r['hac'].get('t')
     reasons = {
-        'evaluated_signal_ge_min': f"可评价signal<{th['min_evaluated_signal']}笔",
-        'evaluated_dates_ge_min': f"可评价日期<{th['min_evaluated_dates']}天",
+        'evaluated_signal_ge_min': f"可评价signal不足{th['min_evaluated_signal']}笔",
+        'evaluated_dates_ge_min': f"可评价日期不足{th['min_evaluated_dates']}天",
         'net_positive_after_stress': f"追加{th['additional_stress_bps']:g}bp后净收益非正或未知",
         'excess_positive': '相对对照超额非正或未知',
         'hac_t_gt_threshold': f"HAC t未超过{th['hac_t']:g}或未知",

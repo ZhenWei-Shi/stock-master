@@ -35,7 +35,7 @@ def test_enough_valid_passes():
 
 def test_200_trades_under_30_dates_insufficient():
     out = S(rows(20, 10, 0.004, 0.0))
-    assert '⏳ 样本不足' in out and '可评价日期<30天' in out and '✅' not in out
+    assert '⏳ 样本不足' in out and '可评价日期不足30天' in out and '✅' not in out
 
 
 def test_signal_behind_control_fails():
