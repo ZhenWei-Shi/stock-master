@@ -13,7 +13,8 @@
   每个日期至多计一次；日期序列使用 HAC(Bartlett, lag=1)。笔数门槛、日期门槛、均值与
   HAC 使用同一可评价日期集合。
 - 只有一个预先指定的对比（signal - control），不做 Holm 调整。
-- supplemental_v2026-10-22-r2 门槛是对已登记规则的补充，不替代登记规则；缺失数据不能通过。
+- supplemental_v2026-10-22-r2 保留补充评价接口与版本；2026-10-23用户另授权由
+  overnight_lab.summarize 将其结果用于确认标准。调用方决定采用范围；缺失数据不能通过。
 - 不修改输入记录。
 '''
 from __future__ import annotations

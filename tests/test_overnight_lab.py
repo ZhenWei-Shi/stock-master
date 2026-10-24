@@ -83,8 +83,8 @@ def test_pool_includes_large_caps(monkeypatch):
 
 
 def test_summarize_judges_only_v2():
-    tr = lambda g, r, pool=None: {"group": g, "ret": r, **({"pool": pool} if pool else {})}
+    tr = lambda g, r, pool=None: {"date": "2026-10-12", "ticker": f"{g}{r}", "group": g, "ret": r, **({"pool": pool} if pool else {})}
     state = {"trades": [tr("signal", -0.03), tr("signal", -0.02),                    # 扩池前旧池
                         tr("signal", 0.01, "v2"), tr("signal", 0.02, "v2"), tr("control", 0.0, "v2")]}
     s = ol.summarize(state)
-    assert "2笔 平均+1.500%" in s and "旧池2笔 平均-2.500%（不参与判定）" in s and "样本未满200" in s
+    assert "完成signal 2/对照1笔" in s and "旧池signal 2笔 平均-2.500%" in s and "不参与判定" in s and "样本不足" in s and "✅" not in s
