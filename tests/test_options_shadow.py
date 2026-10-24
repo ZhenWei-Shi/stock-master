@@ -33,6 +33,12 @@ def test_check_one_take_profit_at_resting_price():
     assert up["exit_debit"] == 0.20 and up["pnl"] == 0.20 and up["reason"].startswith("止盈")
 
 
+def test_odd_cent_shadow_keeps_rounded_resting_price():
+    update = osh.check_one(dict(REC, credit=0.11), 0.05, date(2026, 10, 13))
+    assert update["exit_debit"] == 0.06 and update["pnl"] == 0.05
+    assert "止盈线$0.06" in update["reason"] and "按美分舍入" in update["reason"]
+
+
 def test_check_one_stop_needs_two_checks_and_resets():
     r = dict(REC)
     assert osh.check_one(r, 1.30, date(2026, 10, 13)) is None and r["stop_breach"] is True

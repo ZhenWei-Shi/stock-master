@@ -116,6 +116,17 @@ class TestExit:
     def test_no_close_on_open_day(self):
         assert oa.exit_decision(self.TR, 0.01, date(2026, 10, 1))["action"] == "hold"
 
+    @pytest.mark.parametrize("credit,target", [(0.11, 0.06), (0.15, 0.07), (0.25, 0.12), (0.75, 0.38)])
+    def test_half_cent_target_is_explained_without_changing_boundary(self, credit, target):
+        trade = dict(self.TR, credit=credit)
+        day = date(2026, 10, 5)
+        decision = oa.exit_decision(trade, target, day)
+        assert decision["action"] == "close"
+        assert f"止盈线${target:.2f}" in decision["reason"]
+        assert "按美分舍入" in decision["reason"]
+        assert oa.tp_limit(trade) == target
+        assert oa.exit_decision(trade, round(target + 0.01, 2), day)["action"] == "hold"
+
     def test_close_debit_natural(self):
         assert oa.close_debit({"bid": 1.0, "ask": 1.10}, {"bid": 0.70, "ask": 0.75}) == 0.40
         assert oa.close_debit(None, {"bid": 1}) is None

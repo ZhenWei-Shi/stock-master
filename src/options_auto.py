@@ -263,7 +263,7 @@ def exit_decision(tr: dict, debit: float | None, today: date, prior_breach: bool
     dte = (date.fromisoformat(tr["expiry"]) - today).days
     credit = tr["credit"]
     if debit is not None and debit <= round(credit * TAKE_PROFIT, 2):
-        return {"action": "close", "reason": f"止盈：平仓成本${debit:.2f}≤收入${credit:.2f}的{TAKE_PROFIT:.0%}"}
+        return {"action": "close", "reason": f"止盈：平仓成本${debit:.2f}≤止盈线${round(credit * TAKE_PROFIT, 2):.2f}（收入${credit:.2f}×{TAKE_PROFIT:.0%}，按美分舍入）"}
     breach = stop_breached(tr, debit)
     if breach and prior_breach:
         return {"action": "close",
