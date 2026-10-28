@@ -56,20 +56,8 @@ def _chat_id():
 
 
 def send(msg: str):
-    token = _token()
-    if not token:
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": _chat_id(), "text": msg, "parse_mode": "HTML"},
-            timeout=10,
-        )
-    except Exception as e:
-        # 过滤掉含 token 的异常信息，防止 token 泄漏到日志
-        err_str = str(e)
-        safe_err = "[敏感信息已过滤]" if token and token in err_str else err_str
-        print(f"[Telegram] 发送失败：{safe_err}")
+    from .telegram_delivery import notify
+    return notify(msg, _token(), _chat_id(), post=requests.post)
 
 
 # ─────────────────────────────────────────────────────────────
